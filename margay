@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "$(readlink "${BASH_SOURCE[0]}" || echo "${BASH_SOURCE[0]}")")" 2>/dev/null && pwd || { cd "$(dirname "${BASH_SOURCE[0]}")" && pwd; })"
+# shellcheck source=/dev/null
+source "$HERE/lib/engine.sh"
+# shellcheck source=/dev/null
+source "$HERE/lib/config.sh"
+
+die() { echo "margay: $*" >&2; exit 1; }
+
+margay::context() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git worktree"
+  WORKTREE="$(git rev-parse --show-toplevel)"
+  BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  PRIMARY="$(margay::primary_worktree)"
+  local conf
+  conf="$(margay::config_find "$WORKTREE" "$PRIMARY")" \
+    || die "no .margay.conf for this repo (looked in $WORKTREE and $PRIMARY)"
+  margay::config_load "$conf" || exit 1
+  MARGAY_CONF="$conf"
+  export MARGAY_PROJECT="$project" MARGAY_PRIMARY="$PRIMARY" \
+         MARGAY_WORKTREE="$WORKTREE" MARGAY_BRANCH="$BRANCH"
+  if [[ -n "${env_file:-}" ]]; then
+    [[ -f "$PRIMARY/$env_file" ]] || die "env_file '$env_file' not found in $PRIMARY"
+    set -a; # shellcheck source=/dev/null
+    source "$PRIMARY/$env_file"; set +a
+  fi
+}
+
+margay::prepare_db() {   # service fresh empty → echoes db name ('' if none); non-zero exit on hook failure
+  local svc="$1" fresh="$2" empty="$3" mode db existed=0
+  mode="$(margay::svc_var "$svc" db)"; mode="${mode:-none}"
+  [[ "$mode" == none ]] && { echo ""; return 0; }
+  db="$(margay::db_name "$project" "$BRANCH")"
+  margay::db_exists "$db"
+  case $? in
+    0) existed=1 ;;
+    1) existed=0 ;;
+    *) return 1 ;;
+  esac
+  if [[ "$mode" == empty || "$empty" == 1 ]]; then
+    if (( existed )) && [[ "$fresh" == 1 ]]; then margay::db_drop "$db" || return 1; existed=0; fi
+    (( existed )) || margay::db_create "$db" || return 1
+  elif (( existed )) && [[ "$fresh" == 0 ]]; then
+    echo "  db      $db (reused)" >&2
+  else
+    if (( existed )) && [[ "$fresh" == 1 ]]; then margay::db_drop "$db" || return 1; existed=0; fi
+    (( existed )) || margay::db_create "$db" || return 1
+    echo "  db      $db (seeding from $postgres_seed_from …)" >&2
+    margay::db_seed "$db" || { margay::db_drop "$db"; return 1; }
+  fi
+  echo "$db"
+}
+
+margay::launch() {   # service fresh empty use-overrides
+  local svc="$1" port db log pid uses="" dep depproj="" depsvc="" o out dep_port="" dep_url=""
+  port="$(margay::alloc_port "$svc")" \
+    || die "no free port for '$svc' in $(margay::svc_var "$svc" ports)"
+  db="$(margay::prepare_db "$svc" "$2" "$3")" \
+    || die "db preparation failed for '$svc' (check postgres hook / container)"
+  dep="$(margay::svc_var "$svc" needs)"
+  if [[ -n "$dep" ]]; then
+    depproj="$project"; depsvc="$dep"
+  else
+    dep="$(margay::svc_var "$svc" uses_project)"
+    [[ -n "$dep" ]] && { depproj="${dep%%:*}"; depsvc="${dep##*:}"; }
+  fi
+  if [[ -n "$depsvc" ]]; then
+    o="$(margay::use_override "$4" "$depsvc")"
+    out="$(margay::resolve_dep "$depproj" "$depsvc" "$WORKTREE" "$o" "$(margay::svc_var "$svc" main_port)")" \
+      || die "cannot resolve '$depsvc' for '$svc' — start it first or pass --use $depsvc=<port|url>"
+    read -r dep_port dep_url <<<"$out"
+    uses="$dep_url"
+    echo "  $depsvc → $dep_url"
+  fi
+  log="$(margay::log_path "$project" "$svc" "$BRANCH")"
+  ( cd "$WORKTREE"
+    export PORT="$port"
+    if [[ -n "$db" ]]; then export DB_NAME="$db" DB_URL="$(margay::url_for_db "$db")"; fi
+    if [[ -n "$depsvc" ]]; then
+      U="$(margay::env_name "$depsvc")"
+      eval "export ${U}_PORT=\"\$dep_port\" ${U}_URL=\"\$dep_url\""
+    fi
+    "service_${svc}_start" ) >"$log" 2>&1 &
+  pid=$!
+  margay::registry_add "$(margay::registry_record "$project" "$svc" "$BRANCH" "$WORKTREE" "$port" "$db" "$uses" "$pid")"
+  echo "  ✔ $svc up → http://localhost:$port   (pid $pid, log: $log)"
+}
+
+margay::cmd_up() {
+  margay::context
+  local targets="" fresh=0 empty=0 use="" wt_row="" rows out rc t
+  rows="$(git worktree list --porcelain | margay::worktrees_parse)"
+  while (($#)); do case "$1" in
+    --fresh) fresh=1 ;; --empty) empty=1 ;;
+    --use) shift; [[ $# -ge 1 && "$1" == *=* ]] || die "--use needs NAME=PORT|URL"; use="$use $1" ;;
+    -*) die "unknown flag: $1" ;;
+    *)
+      if [[ " $services " == *" $1 "* ]]; then
+        if margay::worktree_exact_exists "$1" <<<"$rows"; then
+          echo "margay: note: '$1' also names a worktree — resolving as the service; use the full branch name to target the worktree" >&2
+        fi
+        targets="$targets $1"
+      else
+        rc=0; out="$(margay::worktree_resolve "$1" <<<"$rows")" || rc=$?
+        case "$rc" in
+          0) [[ -n "$wt_row" ]] && die "at most one worktree target per invocation"
+             wt_row="$out" ;;
+          2) die "'$1' matches multiple worktrees: $(printf '%s\n' "$out" | cut -f1 | tr '\n' ' ')" ;;
+          *) die "'$1' is neither a declared service ($services) nor a worktree (run 'margay worktrees')" ;;
+        esac
+      fi ;;
+  esac; shift; done
+  [[ "$fresh" == 1 && "$empty" == 1 ]] && die "--fresh and --empty are mutually exclusive"
+
+  if [[ -n "$wt_row" ]]; then
+    WORKTREE="${wt_row%%	*}"
+    BRANCH="${wt_row##*	}"
+    export MARGAY_WORKTREE="$WORKTREE" MARGAY_BRANCH="$BRANCH"
+    local conf2
+    conf2="$(margay::config_find "$WORKTREE" "$PRIMARY")" \
+      || die "no .margay.conf for this repo (looked in $WORKTREE and $PRIMARY)"
+    if [[ "$conf2" != "$MARGAY_CONF" ]]; then
+      margay::config_load "$conf2" || exit 1
+      MARGAY_CONF="$conf2"
+      export MARGAY_PROJECT="$project"
+      for t in $targets; do
+        [[ " $services " == *" $t "* ]] || die "service '$t' not declared by $conf2"
+      done
+    fi
+  fi
+
+  local order svc
+  order="$(margay::topo_services)" || die "internal: topo failed"
+  echo "▶ $project · branch $BRANCH"
+  for svc in $order; do
+    if [[ -z "${targets# }" || " ${targets# } " == *" $svc "* ]]; then
+      margay::launch "$svc" "$fresh" "$empty" "${use# }"
+    fi
+  done
+}
+
+margay::cmd_down() {
+  margay::registry_init
+  local sel_all=0 wt="" rows out rc
+  if [[ "${1:-}" == "--all" ]]; then sel_all=1
+  elif [[ -n "${1:-}" ]]; then
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git worktree"
+    rows="$(git worktree list --porcelain | margay::worktrees_parse)"
+    rc=0; out="$(margay::worktree_resolve "$1" <<<"$rows")" || rc=$?
+    case "$rc" in
+      0) wt="${out%%	*}" ;;
+      2) die "'$1' matches multiple worktrees: $(printf '%s\n' "$out" | cut -f1 | tr '\n' ' ')" ;;
+      *) die "'$1' does not match a worktree (run 'margay worktrees')" ;;
+    esac
+  else
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "run inside a worktree, or use --all"
+    wt="$(git rev-parse --show-toplevel)"
+  fi
+  local pid port
+  while IFS=$'\t' read -r pid port; do
+    [[ -z "$pid" ]] && continue
+    kill "$pid" 2>/dev/null && echo "stopped pid $pid" || echo "pid $pid not running"
+    if [[ -n "$port" ]]; then
+      for _ in 1 2 3; do
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 || break
+        sleep 1
+      done
+      local orphans
+      orphans="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+      if [[ -n "$orphans" ]]; then
+        echo "  reaping orphaned listener on :$port"
+        # shellcheck disable=SC2086
+        kill $orphans 2>/dev/null || true
+      fi
+    fi
+    margay::registry_remove_by_pid "$pid"
+  done < <(
+    if (( sel_all )); then jq -r '.[] | [.pid, .port] | @tsv' "$REGISTRY"
+    else jq -r --arg wt "$wt" '.[] | select(.worktreePath==$wt) | [.pid, .port] | @tsv' "$REGISTRY"; fi
+  )
+}
+
+margay::cmd_status() {
+  margay::registry_prune
+  local rows lines="" proj svc branch port db uses w1=7 w2=7 w3=6 w4=4 w5=2
+  rows="$(jq -r '.[] | [.project, .service, .branch, (.port|tostring), (.dbName // "-"), (.uses // "-")] | @tsv' "$REGISTRY")"
+  while IFS=$'\t' read -r proj svc branch port db uses; do
+    [[ -z "$proj" ]] && continue
+    (( ${#proj} > w1 )) && w1=${#proj}
+    (( ${#svc} > w2 )) && w2=${#svc}
+    (( ${#branch} > w3 )) && w3=${#branch}
+    (( ${#port} > w4 )) && w4=${#port}
+    (( ${#db} > w5 )) && w5=${#db}
+    lines="${lines}${proj}	${svc}	${branch}	${port}	${db}	${uses}"$'\n'
+  done <<<"$rows"
+  printf '%-*s  %-*s  %-*s  %-*s  %-*s  %s\n' "$w1" PROJECT "$w2" SERVICE "$w3" BRANCH "$w4" PORT "$w5" DB USES
+  printf '%s' "$lines" | while IFS=$'\t' read -r proj svc branch port db uses; do
+    printf '%-*s  %-*s  %-*s  %-*s  %-*s  %s\n' "$w1" "$proj" "$w2" "$svc" "$w3" "$branch" "$w4" "$port" "$w5" "$db" "$uses"
+  done
+}
+
+margay::cmd_worktrees() {
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git worktree"
+  local primary rows lines="" path branch sandbox db name disp w1=4 w2=6 w3=7 w4=2
+  primary="$(margay::primary_worktree)"
+  rows="$(git worktree list --porcelain | margay::worktrees_parse | margay::worktrees_join)"
+  # pass 1: derive the targetable name (basename), shorten paths, size the columns
+  while IFS=$'\t' read -r path branch sandbox db; do
+    [[ -z "$path" ]] && continue
+    [[ "$branch" == HEAD ]] && branch="(detached)"
+    name="${path##*/}"
+    if [[ "$path" == "$primary"/* ]]; then disp="./${path#"$primary"/}"
+    else disp="${path/#$HOME/~}"; fi
+    (( ${#name} > w1 )) && w1=${#name}
+    (( ${#branch} > w2 )) && w2=${#branch}
+    (( ${#sandbox} > w3 )) && w3=${#sandbox}
+    (( ${#db} > w4 )) && w4=${#db}
+    lines="${lines}${name}	${branch}	${sandbox}	${db}	${disp}"$'\n'
+  done <<<"$rows"
+  printf '%-*s  %-*s  %-*s  %-*s  %s\n' "$w1" NAME "$w2" BRANCH "$w3" SANDBOX "$w4" DB PATH
+  printf '%s' "$lines" | while IFS=$'\t' read -r name branch sandbox db disp; do
+    printf '%-*s  %-*s  %-*s  %-*s  %s\n' "$w1" "$name" "$w2" "$branch" "$w3" "$sandbox" "$w4" "$db" "$disp"
+  done
+}
+
+main() {
+  local cmd="${1:-help}"; shift || true
+  case "$cmd" in
+    up)       margay::cmd_up "$@" ;;
+    down)     margay::cmd_down "$@" ;;
+    status)   margay::cmd_status ;;
+    worktrees) margay::cmd_worktrees ;;
+    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees" ;;
+    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees" >&2
+              echo "margay: unknown subcommand: $cmd" >&2
+              exit 1 ;;
+  esac
+}
+main "$@"
