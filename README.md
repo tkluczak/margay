@@ -22,9 +22,76 @@ bash ~/Projects/tools/margay/install.sh   # symlinks ~/bin/margay, guards .marga
 Then drop a machine-local `.margay.conf` (see `examples/`) into each project
 repo's primary checkout. Updates: `git pull` — nothing to rebuild.
 
+## Usage
+
 ```
 usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees
 ```
+
+From inside any worktree of a configured repo:
+
+```bash
+margay up                  # every declared service, in dependency order
+margay up web              # just web; its declared dep resolves to a running
+                           # instance (start it first, or pass --use)
+margay up api --fresh      # drop + recreate the branch DB before starting
+margay up api --empty      # create the branch DB but skip seeding
+margay up web --use api=8300                              # pin a dep to a port…
+margay up web --use backend=https://staging.acme.dev:443  # …or a URL
+
+margay up feat-payments        # target another worktree by branch or dirname
+margay up feat-payments web    # one service in that worktree
+
+margay status              # everything margay is running, across all projects
+margay worktrees           # this repo's worktrees + their live sandboxes/DBs
+margay down                # stop the current worktree's sandboxes
+margay down feat-payments  # stop another worktree's
+margay down --all          # stop everything margay started
+```
+
+What that looks like (with the `examples/rust-vite.margay.conf` setup):
+
+```
+$ margay up
+▶ acme · branch feat-payments
+  ✔ api up → http://localhost:8285   (pid 4711, log: ~/.margay/logs/acme-feat_payments-api.log)
+  api → http://localhost:8285
+  ✔ web up → http://localhost:5283   (pid 4712, log: ~/.margay/logs/acme-feat_payments-web.log)
+
+$ margay status
+PROJECT  SERVICE  BRANCH         PORT  DB                     USES
+acme     api      feat-payments  8285  acme_sb_feat_payments  -
+acme     web      feat-payments  5283  -                      http://localhost:8285
+```
+
+Flags (mutually exclusive where noted):
+
+- `--fresh` — drop and recreate the branch DB (re-seeds when `db="seed"`).
+  Mutually exclusive with `--empty`.
+- `--empty` — create the branch DB without seeding, even for `db="seed"`.
+- `--use NAME=PORT|URL` — satisfy a dependency explicitly instead of resolving
+  it. Without it, a dep resolves to a running instance in the same worktree
+  first, then the most recently started instance anywhere, then the service's
+  `main_port` fallback if declared — otherwise `up` refuses and tells you.
+
+### Environment (.env handling)
+
+Declare `env_file=".env.dev"` in `.margay.conf` and every sandbox inherits it
+— sourced (`set -a`) from the **primary checkout**, not the worktree, so fresh
+worktrees need no `.env` copying and there is one canonical env per machine.
+If the file is missing from the primary checkout, `up` errors out.
+
+Each service then starts with this layering, later layers winning:
+
+1. `env_file` from the primary checkout.
+2. Engine variables: `PORT` (always); `DB_NAME` + `DB_URL` when the service
+   declares a db; `<DEP>_PORT` + `<DEP>_URL` when it declares `needs` or
+   `uses_project` (dep name uppercased, e.g. `api` → `API_URL`).
+3. Whatever your `service_<name>_start()` exports itself.
+
+So a shared `.env.dev` can hold the defaults while each sandbox still gets its
+own port and branch DB — see the layering caveats under conf authoring notes
+below.
 
 ## Conf authoring notes
 
