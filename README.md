@@ -16,7 +16,7 @@ Plain bash — no build step. Dependencies: bash 3.2+, jq, git, lsof
 
 ```bash
 git clone <this-repo> ~/Projects/tools/margay
-bash ~/Projects/tools/margay/install.sh   # symlinks ~/bin/margay, guards .margay.conf in the global gitignore, runs the test suite
+bash ~/Projects/tools/margay/install.sh   # symlinks ~/.local/bin/margay, guards .margay.conf in the global gitignore, runs the test suite
 ```
 
 Then drop a machine-local `.margay.conf` (see `examples/`) into each project

@@ -12,14 +12,24 @@ done
 command -v docker >/dev/null 2>&1 \
   || echo "! docker not found — fine unless a project's conf uses postgres hooks"
 
-mkdir -p "$HOME/bin"
-ln -sf "$HERE/margay" "$HOME/bin/margay"
-ln -sf "$HERE/margay" "$HOME/bin/sandbox"   # compat alias
-echo "✔ symlinked ~/bin/margay (+ ~/bin/sandbox alias) → $HERE/margay"
+bindir="$HOME/.local/bin"
+mkdir -p "$bindir"
+ln -sf "$HERE/margay" "$bindir/margay"
+ln -sf "$HERE/margay" "$bindir/sandbox"   # compat alias
+echo "✔ symlinked ~/.local/bin/margay (+ sandbox alias) → $HERE/margay"
 case ":$PATH:" in
-  *":$HOME/bin:"*) ;;
-  *) echo "! ~/bin is not on PATH — add:  export PATH=\"\$HOME/bin:\$PATH\"" ;;
+  *":$bindir:"*) ;;
+  *) echo "! ~/.local/bin is not on PATH — add:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
 esac
+
+# Migrate from the old ~/bin location: drop stale symlinks that point at this repo.
+for old in "$HOME/bin/margay" "$HOME/bin/sandbox"; do
+  if [[ -L "$old" && "$(readlink "$old")" == "$HERE/margay" ]]; then
+    rm "$old"
+    echo "✔ removed old symlink $old"
+  fi
+done
+rmdir "$HOME/bin" 2>/dev/null && echo "✔ removed empty ~/bin" || true
 
 # Global gitignore guard: .margay.conf must never be committable in project repos.
 ignore="$(git config --global core.excludesFile 2>/dev/null || true)"
