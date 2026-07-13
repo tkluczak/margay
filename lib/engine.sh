@@ -71,15 +71,17 @@ margay::registry_remove_by_pid() {
   jq --argjson p "$1" '[ .[] | select(.pid != $p) ]' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
 }
 
-# Args: project service branch worktree port db uses pid
+# Args: project service branch worktree port db uses pid [log]
 margay::registry_record() {
   jq -nc \
     --arg project "$1" --arg service "$2" --arg branch "$3" --arg wt "$4" \
     --argjson port "$5" --arg db "$6" --arg uses "$7" --argjson pid "$8" \
+    --arg log "${9:-}" \
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{project:$project,service:$service,branch:$branch,worktreePath:$wt,port:$port,
       dbName:(if $db=="" then null else $db end),
       uses:(if $uses=="" then null else $uses end),
+      log:(if $log=="" then null else $log end),
       pid:$pid,startedAt:$at}'
 }
 

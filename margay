@@ -83,7 +83,7 @@ margay::launch() {   # service fresh empty use-overrides
     fi
     "service_${svc}_start" ) >"$log" 2>&1 &
   pid=$!
-  margay::registry_add "$(margay::registry_record "$project" "$svc" "$BRANCH" "$WORKTREE" "$port" "$db" "$uses" "$pid")"
+  margay::registry_add "$(margay::registry_record "$project" "$svc" "$BRANCH" "$WORKTREE" "$port" "$db" "$uses" "$pid" "$log")"
   echo "  ✔ $svc up → http://localhost:$port   (pid $pid, log: $log)"
 }
 

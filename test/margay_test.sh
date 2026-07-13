@@ -24,6 +24,12 @@ margay::registry_add "$(margay::registry_record demo api a /tmp/wt-a 7100 mydb '
 margay::registry_add "$(margay::registry_record demo api b /tmp/wt-b 7101 '' '' 999999)"
 margay::registry_add "$(margay::registry_record other api x /tmp/wt-x 7100 '' '' "$$")"
 assert_eq "7100 7101" "$(margay::registry_used_ports demo api)" "used_ports scoped to project"
+assert_eq "/tmp/logs/demo-a-api.log" \
+  "$(margay::registry_record demo api a /tmp/wt-a 7100 '' '' 1 /tmp/logs/demo-a-api.log | jq -r .log)" \
+  "record stores log path"
+assert_eq "null" \
+  "$(margay::registry_record demo api a /tmp/wt-a 7100 '' '' 1 | jq -r .log)" \
+  "record log defaults to null"
 margay::registry_prune
 assert_eq "7100" "$(margay::registry_used_ports demo api)" "prune drops dead pid"
 assert_eq "7100" "$(margay::registry_last_instance demo api)" "last live instance"
