@@ -12,6 +12,7 @@ FAILS=0
 BUSY_PID=""
 FB_PID=""
 WILD_PID=""
+V6_PID=""
 assert_eq()       { if [[ "$1" == "$2" ]]; then echo "ok: $3"; else echo "FAIL: $3 — expected [$1] got [$2]"; FAILS=$((FAILS+1)); fi; }
 assert_contains() { if [[ "$1" == *"$2"* ]]; then echo "ok: $3"; else echo "FAIL: $3 — [$1] lacks [$2]"; FAILS=$((FAILS+1)); fi; }
 
@@ -234,7 +235,7 @@ PYEOF
 )"
 assert_contains "$r" "ECHO:PAYLOAD-BYTES" "proxy: websocket handshake and bytes splice both ways"
 kill $WS_UP_PID 2>/dev/null
-trap 'kill ${UI_PID:-} ${UPSTREAM_PID:-} ${UPSTREAM2_PID:-} ${WS_UP_PID:-} ${BUSY_PID:-} ${FB_PID:-} ${WILD_PID:-} 2>/dev/null' EXIT
+trap 'kill ${UI_PID:-} ${UPSTREAM_PID:-} ${UPSTREAM2_PID:-} ${WS_UP_PID:-} ${BUSY_PID:-} ${FB_PID:-} ${WILD_PID:-} ${V6_PID:-} 2>/dev/null' EXIT
 
 # --- proxy: bind fallback ---
 BUSY=$(( (RANDOM % 2000) + 27000 ))
@@ -271,6 +272,34 @@ r="$(curl -s -H "Host: web.$SLUG.fake.localhost" "http://127.0.0.1:$WILDPORT/wil
 assert_contains "$r" "upstream says hi from /wild" "wildcard bind: proxy routes via loopback"
 assert_contains "$(cat "$WILD_LOG")" "wildcard bind, loopback-only" "wildcard bind: startup line says so"
 kill $WILD_PID 2>/dev/null
+
+# --- proxy: upstream listening on IPv6 loopback only (vite does this) ---
+V6PORT=$(( (RANDOM % 2000) + 31000 ))
+python3 - "$V6PORT" <<'PYEOF' &
+import http.server, socket, sys
+class Srv(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"v6 upstream says hi from " + self.path.encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+Srv(("::1", int(sys.argv[1])), H).serve_forever()
+PYEOF
+V6_PID=$!
+sleep 0.3
+python3 - "$MARGAY_HOME" "$REPO" "$V6PORT" "$$" <<'PYEOF'
+import json, sys
+home, repo, port, pid = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+reg = json.load(open(home + "/registry.json"))
+reg.append({"project":"fake","service":"v6svc","branch":"test","worktreePath":repo,"port":port,
+            "dbName":None,"uses":None,"log":None,"pid":pid,"startedAt":"2026-07-13T13:00:00Z"})
+json.dump(reg, open(home + "/registry.json", "w"))
+PYEOF
+r="$(curl -s -H "Host: v6svc.$SLUG.fake.localhost" "http://127.0.0.1:$PROXYPORT/hello6")"
+assert_contains "$r" "v6 upstream says hi from /hello6" "proxy: reaches an IPv6-loopback-only upstream"
+kill $V6_PID 2>/dev/null
 
 # --- routing helpers (python import harness) ---
 # NOTE: this block mutates $MARGAY_HOME/projects.json and registry.json fixtures;
