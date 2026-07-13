@@ -129,10 +129,11 @@ function renderDock() {
     });
     dockTabs.appendChild(el);
   }
+  const t = tabs.get(activeKey);
+  if (t) paneFor(activeKey);   // ensure the pane exists before the visibility pass
   for (const pre of dockPanes.querySelectorAll('.pane')) {
     pre.classList.toggle('act', pre.dataset.key === activeKey);
   }
-  const t = tabs.get(activeKey);
   dockMeta.innerHTML = !t ? '' : (t.meta || []).map(m =>
     m.href ? '<a href="' + esc(m.href) + '" target="_blank" rel="noopener">' + esc(m.text) + '</a>'
            : '<span>' + esc(m.text) + '</span>').join('');
