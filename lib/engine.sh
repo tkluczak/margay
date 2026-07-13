@@ -10,6 +10,7 @@ type die >/dev/null 2>&1 || die() { echo "margay: $*" >&2; return 1; }
 # ---- CONFIG (only project-specific values; see plan Global Constraints) ----
 MARGAY_HOME="${MARGAY_HOME:-$HOME/.margay}"
 REGISTRY="$MARGAY_HOME/registry.json"
+PROJECTS="$MARGAY_HOME/projects.json"
 LOG_DIR="$MARGAY_HOME/logs"
 # ---- END CONFIG ----
 
@@ -69,6 +70,34 @@ margay::registry_remove_by_pid() {
   margay::registry_init
   local tmp; tmp="$(mktemp)"
   jq --argjson p "$1" '[ .[] | select(.pid != $p) ]' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+}
+
+# ---- projects.json: static registry of every project ever margay'd ----
+margay::projects_init() {
+  mkdir -p "$MARGAY_HOME"
+  [[ -f "$PROJECTS" ]] || echo '[]' > "$PROJECTS"
+}
+
+# Upsert keyed on primaryPath; refreshes project name and lastUp.
+margay::projects_learn() {   # project primaryPath
+  margay::projects_init
+  local tmp; tmp="$(mktemp)"
+  jq --arg p "$1" --arg path "$2" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '[ .[] | select(.primaryPath != $path) ] + [{project:$p, primaryPath:$path, lastUp:$at}]' \
+    "$PROJECTS" > "$tmp" && mv "$tmp" "$PROJECTS"
+}
+
+# Remove entries whose primaryPath OR project equals the query.
+# rc 0 if something was removed, 1 otherwise.
+margay::projects_remove() {   # query
+  margay::projects_init
+  local before after tmp
+  before="$(jq 'length' "$PROJECTS")"
+  tmp="$(mktemp)"
+  jq --arg q "$1" '[ .[] | select(.primaryPath != $q and .project != $q) ]' \
+    "$PROJECTS" > "$tmp" && mv "$tmp" "$PROJECTS"
+  after="$(jq 'length' "$PROJECTS")"
+  [[ "$after" -lt "$before" ]]
 }
 
 # Args: project service branch worktree port db uses pid [log]

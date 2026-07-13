@@ -161,5 +161,23 @@ assert_eq "/tmp/prj/.claude/worktrees/det	HEAD	-	-" \
   "$(printf '%s\n' "$JOINED" | sed -n 3p)" "join: dead pid pruned"
 rm -f "$REGISTRY"
 
+# --- projects.json (static project registry) ---
+rm -f "$PROJECTS"
+margay::projects_learn acme /tmp/proj/acme
+margay::projects_learn beta /tmp/proj/beta
+assert_eq "2" "$(jq 'length' "$PROJECTS")" "projects: learn adds entries"
+margay::projects_learn acme2 /tmp/proj/acme
+assert_eq "2" "$(jq 'length' "$PROJECTS")" "projects: learn upserts on primaryPath"
+assert_eq "acme2" "$(jq -r '.[] | select(.primaryPath=="/tmp/proj/acme") | .project' "$PROJECTS")" \
+  "projects: upsert updates the name"
+assert_eq "true" "$(jq '[.[] | select(.primaryPath=="/tmp/proj/acme")][0].lastUp != null' "$PROJECTS")" \
+  "projects: entries carry lastUp"
+assert_ok   margay::projects_remove beta
+assert_eq "1" "$(jq 'length' "$PROJECTS")" "projects: remove by project name"
+assert_ok   margay::projects_remove /tmp/proj/acme
+assert_eq "0" "$(jq 'length' "$PROJECTS")" "projects: remove by path"
+assert_fail margay::projects_remove nothing-matches
+rm -f "$PROJECTS"
+
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi
