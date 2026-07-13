@@ -160,6 +160,52 @@ assert_eq "502" "$code" "proxy: unknown host is 502"
 r="$(curl -s -H "Host: nope.fake.localhost" "http://127.0.0.1:$PROXYPORT/")"
 assert_contains "$r" "$SLUG.fake.localhost" "proxy: 502 page lists live URLs"
 
+# --- proxy: websocket tunnel ---
+WSPORT=$(( (RANDOM % 2000) + 27000 ))
+python3 - "$WSPORT" <<'PYEOF' &
+import socket, sys
+srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", int(sys.argv[1]))); srv.listen(1)
+c, _ = srv.accept()
+data = b""
+while b"\r\n\r\n" not in data:
+    data += c.recv(4096)
+c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+frame = c.recv(4096)          # echo whatever "frame" bytes arrive
+c.sendall(b"ECHO:" + frame)
+c.close()
+PYEOF
+WS_UP_PID=$!
+sleep 0.3
+# point a third live registry row at it so it gets a host
+# NOTE: the pid must be a LIVE process for the whole test run — pass the test
+# shell's $$, never os.getpid() of this short-lived python (it would be pruned).
+python3 - "$MARGAY_HOME" "$REPO" "$WSPORT" "$$" <<'PYEOF'
+import json, sys
+home, repo, port, pid = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+reg = json.load(open(home + "/registry.json"))
+reg.append({"project":"fake","service":"ws","branch":"main","worktreePath":repo,"port":port,
+            "dbName":None,"uses":None,"log":None,"pid":pid,"startedAt":"2026-07-13T12:00:00Z"})
+json.dump(reg, open(home + "/registry.json", "w"))
+PYEOF
+r="$(python3 - "$PROXYPORT" "ws.$SLUG.fake.localhost" <<'PYEOF'
+import socket, sys
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+s.sendall(("GET /realtime HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+           "Sec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n" % sys.argv[2]).encode())
+resp = b""
+while b"\r\n\r\n" not in resp:
+    resp += s.recv(4096)
+assert b"101" in resp.split(b"\r\n")[0], resp
+s.sendall(b"PAYLOAD-BYTES")
+out = s.recv(4096)
+print(out.decode())
+PYEOF
+)"
+assert_contains "$r" "ECHO:PAYLOAD-BYTES" "proxy: websocket handshake and bytes splice both ways"
+kill $WS_UP_PID 2>/dev/null
+trap 'kill $UI_PID $UPSTREAM_PID $UPSTREAM2_PID $WS_UP_PID 2>/dev/null' EXIT
+
 # --- proxy: bind fallback ---
 BUSY=$(( (RANDOM % 2000) + 27000 ))
 python3 -c 'import socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(1); time.sleep(30)' "$BUSY" &

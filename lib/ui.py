@@ -325,8 +325,35 @@ class ProxyHandler(BaseHTTPRequestHandler):
             conn.close()
 
     def _tunnel(self, port):
-        # Task 3 replaces this stub with the real websocket splice.
-        self._error_page("websocket proxying not available yet")
+        try:
+            up = socket.create_connection(("127.0.0.1", port), timeout=10)
+        except OSError as e:
+            self._error_page("service on port %s is not answering (%s)" % (port, e))
+            return
+        req = ["%s %s HTTP/1.1" % (self.command, self.path)]
+        req += ["%s: %s" % (k, v) for k, v in self.headers.items()]
+        up.sendall(("\r\n".join(req) + "\r\n\r\n").encode("latin-1"))
+        client = self.connection
+        up.settimeout(None)
+        client.settimeout(None)
+        try:
+            while True:
+                readable, _, _ = select.select([client, up], [], [], 3600)
+                if not readable:
+                    break
+                for s in readable:
+                    data = s.recv(65536)
+                    if not data:
+                        raise ConnectionError
+                    (up if s is client else client).sendall(data)
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            try:
+                up.close()
+            except OSError:
+                pass
+            self.close_connection = True
 
     def _send_html(self, body):
         data = body.encode()
