@@ -169,15 +169,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "not found"}, 404)
 
     def run_margay(self, argv, cwd):
-        with mutate_lock:   # registry writes are not concurrent-safe
-            try:
+        try:
+            with mutate_lock:   # registry writes are not concurrent-safe
                 proc = subprocess.run(
                     [MARGAY_BIN] + argv, cwd=cwd,
                     capture_output=True, text=True, timeout=300,
                 )
-            except (OSError, subprocess.TimeoutExpired) as e:
-                self.send_json({"ok": False, "output": str(e)}, 500)
-                return
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self.send_json({"ok": False, "output": str(e)}, 500)
+            return
         ok = proc.returncode == 0
         self.send_json({"ok": ok, "output": proc.stdout + proc.stderr},
                        200 if ok else 500)
