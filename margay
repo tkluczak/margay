@@ -251,6 +251,29 @@ margay::cmd_unregister() {
   echo "unregistered: $q   (it re-appears on the next 'margay up' there)"
 }
 
+# One-line JSON dump of the loaded conf's dependency-relevant fields.
+# Consumed by lib/ui.py (tree grouping, pair-options); not user-facing.
+margay::cmd_conf_json() {
+  margay::context
+  local s items="[]"
+  for s in $services; do
+    items="$(jq -c --argjson items "$items" -n \
+      --arg name "$s" \
+      --arg ports "$(margay::svc_var "$s" ports)" \
+      --arg needs "$(margay::svc_var "$s" needs)" \
+      --arg up "$(margay::svc_var "$s" uses_project)" \
+      --arg uo "$(margay::svc_var "$s" uses_optional)" \
+      --arg mp "$(margay::svc_var "$s" main_port)" \
+      '$items + [{name:$name, ports:$ports,
+        needs:(if $needs=="" then null else $needs end),
+        usesProject:(if $up=="" then null else $up end),
+        usesOptional:($uo=="1"),
+        mainPort:(if $mp=="" then null else ($mp|tonumber) end)}]')"
+  done
+  jq -c -n --arg project "$project" --argjson services "$items" \
+    '{project:$project, services:$services}'
+}
+
 margay::cmd_ui() {
   command -v python3 >/dev/null 2>&1 \
     || die "python3 not found — 'margay ui' needs Python 3 (the rest of margay does not)"
@@ -265,6 +288,7 @@ main() {
     status)   margay::cmd_status ;;
     worktrees) margay::cmd_worktrees ;;
     unregister) margay::cmd_unregister "$@" ;;
+    conf-json) margay::cmd_conf_json ;;
     ui)       margay::cmd_ui "$@" ;;
     help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" ;;
     *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" >&2

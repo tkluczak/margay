@@ -141,6 +141,24 @@ strict_none="$(cd "$REPO" && "$MARGAY" up ui --use api=none 2>&1)" \
   && { echo "FAIL: --use api=none on non-optional service should fail"; FAILS=$((FAILS+1)); } || true
 assert_contains "$strict_none" "uses_optional" "non-optional none rejected with hint"
 ( cd "$REPO" && "$MARGAY" down >/dev/null 2>&1 || true )
+# --- conf-json ---
+cj="$(cd "$REPO3" && "$MARGAY" conf-json 2>&1)"
+ok_cj="$(printf '%s' "$cj" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+web = [s for s in d["services"] if s["name"] == "web"][0]
+api = [s for s in d["services"] if s["name"] == "api"][0]
+assert d["project"] == "optproj", d
+assert web["usesProject"] == "optproj:api" and web["usesOptional"] is True, web
+assert web["mainPort"] == 9999 and web["needs"] is None, web
+assert api["usesProject"] is None and api["usesOptional"] is False and api["mainPort"] is None, api
+assert api["ports"] == "7170-7174", api
+print("CONF-JSON-OK")
+' 2>&1)"
+assert_contains "$ok_cj" "CONF-JSON-OK" "conf-json emits full dependency metadata"
+cj2="$(cd "$REPO" && "$MARGAY" conf-json 2>&1)"
+assert_contains "$cj2" '"needs":"api"' "conf-json carries same-project needs"
+
 ( cd "$REPO3" && "$MARGAY" unregister >/dev/null 2>&1 )   # keep the later projects.json count stable
 
 # --- unregister ---
