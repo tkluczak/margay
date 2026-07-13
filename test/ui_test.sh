@@ -100,5 +100,10 @@ assert_eq "400" "$code" "unregister: primaryPath required"
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'not json' "$BASE/api/up")"
 assert_eq "400" "$code" "bad json is 400"
 
+# --- served page ---
+page="$(curl -s "$BASE/")"
+assert_contains "$page" "<title>margay</title>" "GET / serves the page"
+assert_contains "$page" "/api/state" "page polls /api/state"
+
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi
