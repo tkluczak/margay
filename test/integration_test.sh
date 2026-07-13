@@ -26,6 +26,10 @@ st="$(cd "$REPO" && "$MARGAY" status)"
 assert_contains "$st" "fake" "status shows project"
 assert_contains "$st" "7150" "status shows api port"
 assert_contains "$st" "http://localhost:7150" "status shows ui→api uses"
+assert_contains "$(jq -r '.[0].project' "$MARGAY_HOME/projects.json")" "fake" \
+  "up auto-learns the project into projects.json"
+assert_contains "$(jq -r '.[0].primaryPath' "$MARGAY_HOME/projects.json")" "$REPO" \
+  "auto-learn records the primary path"
 down="$(cd "$REPO" && "$MARGAY" down 2>&1)"
 assert_contains "$down" "stopped pid" "down stops"
 sleep 1
@@ -100,6 +104,14 @@ else echo "FAIL: bare margay did not exit 0"; FAILS=$((FAILS+1)); fi
 "$MARGAY" help >/dev/null 2>&1
 if [[ $? == 0 ]]; then echo "ok: margay help exits 0"
 else echo "FAIL: margay help did not exit 0"; FAILS=$((FAILS+1)); fi
+
+# --- unregister ---
+unreg="$(cd "$REPO" && "$MARGAY" unregister 2>&1)"
+assert_contains "$unreg" "unregistered" "unregister (no arg) removes current repo"
+assert_contains "$(jq 'length' "$MARGAY_HOME/projects.json")" "0" "projects.json emptied"
+bad="$("$MARGAY" unregister nothing-here 2>&1)" \
+  && { echo "FAIL: unregister miss should fail"; FAILS=$((FAILS+1)); } || true
+assert_contains "$bad" "no registered project matches" "unregister miss error"
 
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi

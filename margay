@@ -138,6 +138,7 @@ margay::cmd_up() {
       margay::launch "$svc" "$fresh" "$empty" "${use# }"
     fi
   done
+  margay::projects_learn "$project" "$PRIMARY"
 }
 
 margay::cmd_down() {
@@ -224,6 +225,17 @@ margay::cmd_worktrees() {
   done
 }
 
+margay::cmd_unregister() {
+  local q="${1:-}"
+  if [[ -z "$q" ]]; then
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      || die "not inside a git worktree (or pass a path or project name)"
+    q="$(margay::primary_worktree)"
+  fi
+  margay::projects_remove "$q" || die "no registered project matches '$q'"
+  echo "unregistered: $q   (it re-appears on the next 'margay up' there)"
+}
+
 main() {
   local cmd="${1:-help}"; shift || true
   case "$cmd" in
@@ -231,8 +243,9 @@ main() {
     down)     margay::cmd_down "$@" ;;
     status)   margay::cmd_status ;;
     worktrees) margay::cmd_worktrees ;;
-    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees" ;;
-    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees" >&2
+    unregister) margay::cmd_unregister "$@" ;;
+    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N]" ;;
+    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N]" >&2
               echo "margay: unknown subcommand: $cmd" >&2
               exit 1 ;;
   esac
