@@ -168,6 +168,17 @@ ui.PROXY["port"] = 80
 assert ui.host_url("x.vp.localhost") == "http://x.vp.localhost/", ui.host_url("x.vp.localhost")
 ui.PROXY["port"] = 8123
 assert ui.host_url("x.vp.localhost") == "http://x.vp.localhost:8123/", ui.host_url("x.vp.localhost")
+
+# regression: primary must NOT collide with its own project's worktrees,
+# even when a worktree started earlier (base is a dot-suffix of their hosts)
+early_wt = dict(rows[0], worktreePath="/tmp/routes-wt", startedAt="2026-07-13T07:00:00Z", port=7301)
+late_prim = dict(rows[0], worktreePath=pr, startedAt="2026-07-13T09:30:00Z", port=7302)
+json.dump([early_wt, late_prim], open(home + "/registry.json", "w"))
+routes4, info4 = ui.build_routes()
+assert routes4["vp.localhost"] == 7302, routes4
+assert info4[pr]["collision"] is False, info4
+assert routes4["routes-wt.vp.localhost"] == 7301, routes4
+
 print("PYHELP_OK")
 PYEOF
 }

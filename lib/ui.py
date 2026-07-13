@@ -105,6 +105,7 @@ def build_routes():
     for r in live:
         by_wt.setdefault((r.get("project"), r.get("worktreePath")), []).append(r)
     routes, info = {}, {}
+    claimed = set()
     ordered = sorted(by_wt.items(),
                      key=lambda kv: min(r.get("startedAt") or "" for r in kv[1]))
     for (project, wt_path), rows in ordered:
@@ -112,15 +113,16 @@ def build_routes():
         is_primary = primaries.get(project) == wt_path
         base = ("%s.localhost" % pslug if is_primary
                 else "%s.%s.localhost" % (slugify(os.path.basename(wt_path or "")), pslug))
-        if base in routes or any(h.endswith("." + base) for h in routes):
+        if base in claimed or base in routes:
             info[wt_path] = {"host": None, "collision": True}
             continue
+        claimed.add(base)
         leaves = leaf_services(rows)
         root = leaves[0] if len(leaves) == 1 else None
         if root:
-            routes[base] = root.get("port")
+            routes.setdefault(base, root.get("port"))
         for r in rows:
-            routes["%s.%s" % (slugify(r.get("service")), base)] = r.get("port")
+            routes.setdefault("%s.%s" % (slugify(r.get("service")), base), r.get("port"))
         info[wt_path] = {"host": base if root else None, "collision": False}
     return routes, info
 
