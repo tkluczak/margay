@@ -143,6 +143,45 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_json({"error": "not found"}, 404)
 
+    def do_POST(self):
+        url = urlparse(self.path)
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError
+        except ValueError:
+            self.send_json({"ok": False, "output": "bad json body"}, 400)
+            return
+        if url.path in ("/api/up", "/api/down"):
+            wt = body.get("worktreePath", "")
+            if not os.path.isdir(wt):
+                self.send_json({"ok": False, "output": "no such worktree: %s" % wt}, 400)
+                return
+            self.run_margay([url.path.rsplit("/", 1)[1]], cwd=wt)
+        elif url.path == "/api/unregister":
+            path = body.get("primaryPath", "")
+            if not path:
+                self.send_json({"ok": False, "output": "primaryPath required"}, 400)
+                return
+            self.run_margay(["unregister", path], cwd=None)
+        else:
+            self.send_json({"error": "not found"}, 404)
+
+    def run_margay(self, argv, cwd):
+        with mutate_lock:   # registry writes are not concurrent-safe
+            try:
+                proc = subprocess.run(
+                    [MARGAY_BIN] + argv, cwd=cwd,
+                    capture_output=True, text=True, timeout=300,
+                )
+            except (OSError, subprocess.TimeoutExpired) as e:
+                self.send_json({"ok": False, "output": str(e)}, 500)
+                return
+        ok = proc.returncode == 0
+        self.send_json({"ok": ok, "output": proc.stdout + proc.stderr},
+                       200 if ok else 500)
+
 
 def main():
     ap = argparse.ArgumentParser(prog="margay ui")

@@ -25,6 +25,17 @@ cat > "$MARGAY_HOME/registry.json" <<EOF
   "dbName":null,"uses":null,"log":null,"pid":999999,"startedAt":"2026-07-13T00:00:00Z"}]
 EOF
 
+# mock margay for POST endpoints (up succeeds, down fails)
+MOCK="$MARGAY_HOME/mock-margay"
+cat > "$MOCK" <<'EOF'
+#!/usr/bin/env bash
+echo "mock: $* (cwd=$PWD)"
+[[ "$1" == "down" ]] && exit 1
+exit 0
+EOF
+chmod +x "$MOCK"
+export MARGAY_BIN="$MOCK"
+
 python3 "$HERE/../lib/ui.py" --port "$PORT" --no-browser &
 UI_PID=$!
 trap 'kill $UI_PID 2>/dev/null' EXIT
@@ -67,6 +78,27 @@ assert_eq "404" "$code" "log: missing file is 404"
 mkdir -p "$MARGAY_HOME/logs/subdir"
 code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/log?file=$MARGAY_HOME/logs/subdir&offset=-1")"
 assert_eq "404" "$code" "log: directory under logs is 404"
+
+# --- POST /api/up /api/down /api/unregister ---
+r="$(curl -s -X POST -H 'Content-Type: application/json' \
+     -d "{\"worktreePath\":\"$REPO\"}" "$BASE/api/up")"
+assert_eq "true" "$(jq -r '.ok' <<<"$r")" "up: ok on exit 0"
+assert_contains "$(jq -r '.output' <<<"$r")" "mock: up (cwd=$REPO)" "up: runs margay in the worktree"
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+     -d "{\"worktreePath\":\"$REPO\"}" "$BASE/api/down")"
+assert_eq "500" "$code" "down: non-zero exit maps to 500"
+r="$(curl -s -X POST -d "{\"worktreePath\":\"$REPO\"}" "$BASE/api/down")"
+assert_eq "false" "$(jq -r '.ok' <<<"$r")" "down: ok=false on failure"
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+     -d '{"worktreePath":"/nonexistent/margay-test"}' "$BASE/api/up")"
+assert_eq "400" "$code" "up: missing worktree dir is 400"
+r="$(curl -s -X POST -d '{"primaryPath":"/nonexistent/margay-test"}' "$BASE/api/unregister")"
+assert_contains "$(jq -r '.output' <<<"$r")" "mock: unregister /nonexistent/margay-test" \
+  "unregister: shells out to margay unregister <path>"
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' "$BASE/api/unregister")"
+assert_eq "400" "$code" "unregister: primaryPath required"
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'not json' "$BASE/api/up")"
+assert_eq "400" "$code" "bad json is 400"
 
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi
