@@ -85,6 +85,7 @@ margay::projects_learn() {   # project primaryPath
   jq --arg p "$1" --arg path "$2" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '[ .[] | select(.primaryPath != $path) ] + [{project:$p, primaryPath:$path, lastUp:$at}]' \
     "$PROJECTS" > "$tmp" && mv "$tmp" "$PROJECTS"
+  return 0
 }
 
 # Remove entries whose primaryPath OR project equals the query.

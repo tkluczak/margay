@@ -177,6 +177,10 @@ assert_eq "1" "$(jq 'length' "$PROJECTS")" "projects: remove by project name"
 assert_ok   margay::projects_remove /tmp/proj/acme
 assert_eq "0" "$(jq 'length' "$PROJECTS")" "projects: remove by path"
 assert_fail margay::projects_remove nothing-matches
+assert_ok margay::projects_learn acme /tmp/proj/acme
+PROJECTS_SAVED="$PROJECTS"; PROJECTS="/nonexistent-margay-dir/x.json"
+assert_ok margay::projects_learn ghost /tmp/proj/ghost 2>/dev/null   # never fails, even if the file is unwritable
+PROJECTS="$PROJECTS_SAVED"
 rm -f "$PROJECTS"
 
 echo "----"
