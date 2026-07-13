@@ -105,6 +105,44 @@ else echo "FAIL: bare margay did not exit 0"; FAILS=$((FAILS+1)); fi
 if [[ $? == 0 ]]; then echo "ok: margay help exits 0"
 else echo "FAIL: margay help did not exit 0"; FAILS=$((FAILS+1)); fi
 
+# --- optional dependencies + --use NAME=none ---
+REPO3="$(mktemp -d)"
+( cd "$REPO3" && git init -q && git commit -q --allow-empty -m init )
+cat > "$REPO3/.margay.conf" <<'EOF'
+project="optproj"
+services="api web"
+service_api_ports="7170-7174"
+service_api_start() { exec sleep 300; }
+service_web_ports="7180-7184"
+service_web_uses_project="optproj:api"
+service_web_uses_optional=1
+service_web_main_port=9999
+service_web_start() { echo "DEP=[${API_URL:-unset}]"; exec sleep 300; }
+EOF
+
+opt_out="$(cd "$REPO3" && "$MARGAY" up web 2>&1)"
+assert_contains "$opt_out" "api → none (optional)" "optional dep, no live instance: announces none"
+sleep 1
+opt_log="$(jq -r '[.[] | select(.project=="optproj" and .service=="web")] | last | .log' "$MARGAY_HOME/registry.json")"
+assert_contains "$(cat "$opt_log")" "DEP=[unset]" "optional dep, no live instance: env unset (main_port NOT used)"
+assert_contains "$(jq -r '[.[] | select(.project=="optproj" and .service=="web")] | last | .uses' "$MARGAY_HOME/registry.json")" "null" \
+  "optional none records uses=null"
+( cd "$REPO3" && "$MARGAY" down >/dev/null 2>&1 )
+
+( cd "$REPO3" && "$MARGAY" up api >/dev/null 2>&1 )
+none_out="$(cd "$REPO3" && "$MARGAY" up web --use api=none 2>&1)"
+assert_contains "$none_out" "api → none (optional)" "--use api=none skips a live instance"
+sleep 1
+none_log="$(jq -r '[.[] | select(.project=="optproj" and .service=="web")] | last | .log' "$MARGAY_HOME/registry.json")"
+assert_contains "$(cat "$none_log")" "DEP=[unset]" "--use api=none: env unset despite live api"
+( cd "$REPO3" && "$MARGAY" down >/dev/null 2>&1 )
+
+strict_none="$(cd "$REPO" && "$MARGAY" up ui --use api=none 2>&1)" \
+  && { echo "FAIL: --use api=none on non-optional service should fail"; FAILS=$((FAILS+1)); } || true
+assert_contains "$strict_none" "uses_optional" "non-optional none rejected with hint"
+( cd "$REPO" && "$MARGAY" down >/dev/null 2>&1 || true )
+( cd "$REPO3" && "$MARGAY" unregister >/dev/null 2>&1 )   # keep the later projects.json count stable
+
 # --- unregister ---
 unreg="$(cd "$REPO" && "$MARGAY" unregister 2>&1)"
 assert_contains "$unreg" "unregistered" "unregister (no arg) removes current repo"
