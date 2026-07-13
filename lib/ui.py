@@ -136,6 +136,33 @@ def build_routes():
     return routes, info
 
 
+CONF_CACHE = {}   # primaryPath -> (conf mtime, parsed conf-json or None)
+
+
+def conf_meta(primary):
+    """Dependency metadata from `margay conf-json`, cached by conf mtime."""
+    conf = os.path.join(primary, ".margay.conf")
+    try:
+        mtime = os.path.getmtime(conf)
+    except OSError:
+        return None
+    hit = CONF_CACHE.get(primary)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    data = None
+    try:
+        proc = subprocess.run([MARGAY_BIN, "conf-json"], cwd=primary,
+                              capture_output=True, text=True, timeout=10)
+        if proc.returncode == 0:
+            data = json.loads(proc.stdout)
+        if not isinstance(data, dict):
+            data = None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        data = None
+    CONF_CACHE[primary] = (mtime, data)
+    return data
+
+
 def state():
     live = [r for r in read_json(REGISTRY) if pid_alive(r.get("pid"))]
     _, wt_info = build_routes()
@@ -170,7 +197,8 @@ def state():
                             "url": host_url(info["host"]) if proxy_up and info.get("host") else None,
                             "hintUrl": host_url(base) if proxy_up else None,
                             "collision": bool(info.get("collision"))})
-        projects.append({**p, "exists": exists, "worktrees": wts})
+        projects.append({**p, "exists": exists, "worktrees": wts,
+                         "conf": conf_meta(primary) if exists else None})
     return {"projects": projects}
 
 

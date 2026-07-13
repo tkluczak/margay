@@ -64,10 +64,15 @@ cat > "$MARGAY_HOME/registry.json" <<EOF
   "dbName":null,"uses":null,"log":null,"pid":999999,"startedAt":"2026-07-13T00:00:02Z"}]
 EOF
 
-# mock margay for POST endpoints (up succeeds, down fails)
+# mock margay for POST endpoints (up succeeds, down fails) and conf-json
+touch "$PRIMARY/.margay.conf"   # conf_meta needs the file to exist (mtime cache key)
 MOCK="$MARGAY_HOME/mock-margay"
 cat > "$MOCK" <<'EOF'
 #!/usr/bin/env bash
+if [[ "$1" == "conf-json" ]]; then
+  echo '{"project":"fake","services":[{"name":"api","ports":"7100-7104","needs":null,"usesProject":null,"usesOptional":false,"mainPort":null},{"name":"web","ports":"7110-7114","needs":"api","usesProject":null,"usesOptional":true,"mainPort":8090}]}'
+  exit 0
+fi
 echo "mock: $* (cwd=$PWD)"
 [[ "$1" == "down" ]] && exit 1
 exit 0
@@ -121,6 +126,15 @@ assert_eq "http://web.$SLUG.fake.localhost:$PROXYPORT/" \
   "$(jq -r '.services[] | select(.service=="web") | .url' <<<"$REPO_WT")" \
   "state: web service url is service-prefixed subdomain"
 assert_eq "false" "$(jq -r '.collision' <<<"$REPO_WT")" "state: no collision flag"
+
+# --- /api/state conf metadata (ui v4) ---
+assert_eq "2"    "$(jq -r '.projects[0].conf.services | length' <<<"$st")" "state: conf metadata carries declared services"
+assert_eq "true" "$(jq -r '.projects[0].conf.services[1].usesOptional' <<<"$st")" "state: usesOptional surfaces"
+assert_eq "api"  "$(jq -r '.projects[0].conf.services[1].needs' <<<"$st")" "state: needs surfaces"
+assert_eq "null" "$(jq -r '.projects[1].conf' <<<"$st")" "state: missing project has null conf"
+assert_eq "http://localhost:$UPSTREAM_PORT" \
+  "$(jq -r '.services[] | select(.service=="web") | .uses' <<<"$REPO_WT")" \
+  "state: running instance surfaces its uses pairing"
 
 # --- /api/log ---
 r="$(curl -s "$BASE/api/log?file=$LOG&offset=-1")"
