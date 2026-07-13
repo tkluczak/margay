@@ -46,5 +46,24 @@ assert_eq "api"   "$(jq -r '.projects[0].worktrees[0].services[0].service' <<<"$
 assert_eq "$LOG"  "$(jq -r '.projects[0].worktrees[0].services[0].log' <<<"$st")" "state: service carries log path"
 assert_eq "0"     "$(grep -c _normalized_path <<<"$st" || true)" "state: no internal keys leak"
 
+# --- /api/log ---
+r="$(curl -s "$BASE/api/log?file=$LOG&offset=-1")"
+assert_eq "hello log" "$(jq -r '.data' <<<"$r" | head -1)" "log: initial tail returns content"
+assert_eq "10" "$(jq -r '.offset' <<<"$r")" "log: initial tail returns next offset"
+printf 'more\n' >> "$LOG"
+r="$(curl -s "$BASE/api/log?file=$LOG&offset=10")"
+assert_eq "more" "$(jq -r '.data' <<<"$r" | head -1)" "log: offset poll returns only the delta"
+assert_eq "15" "$(jq -r '.offset' <<<"$r")" "log: offset advances"
+printf 'new\n' > "$LOG"   # truncate: 15 > 4
+r="$(curl -s "$BASE/api/log?file=$LOG&offset=15")"
+assert_eq "new" "$(jq -r '.data' <<<"$r" | head -1)" "log: truncation resets to 0"
+assert_eq "4" "$(jq -r '.offset' <<<"$r")" "log: offset after reset"
+code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/log?file=/etc/hosts&offset=-1")"
+assert_eq "404" "$code" "log: path outside logs dir rejected"
+code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/log?file=$MARGAY_HOME/logs/../registry.json&offset=-1")"
+assert_eq "404" "$code" "log: ../ escape rejected"
+code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/log?file=$MARGAY_HOME/logs/nope.log&offset=-1")"
+assert_eq "404" "$code" "log: missing file is 404"
+
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi

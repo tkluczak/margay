@@ -12,7 +12,7 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 MARGAY_HOME = Path(os.environ.get("MARGAY_HOME", str(Path.home() / ".margay")))
 PROJECTS = MARGAY_HOME / "projects.json"
@@ -81,6 +81,26 @@ def state():
     return {"projects": projects}
 
 
+def log_slice(file_param, offset):
+    """Bytes from offset (or the last TAIL_BYTES if offset<0). None = refuse."""
+    real = os.path.realpath(file_param)
+    logs_root = os.path.realpath(str(LOG_DIR))
+    if not real.startswith(logs_root + os.sep):
+        return None
+    try:
+        size = os.path.getsize(real)
+    except OSError:
+        return None
+    if offset < 0:
+        offset = max(0, size - TAIL_BYTES)
+    if offset > size:          # rotated or truncated: start over
+        offset = 0
+    with open(real, "rb") as f:
+        f.seek(offset)
+        data = f.read(TAIL_BYTES)
+    return {"data": data.decode("utf-8", "replace"), "offset": offset + len(data)}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):   # keep the terminal quiet
         pass
@@ -107,6 +127,17 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif url.path == "/api/state":
             self.send_json(state())
+        elif url.path == "/api/log":
+            q = parse_qs(url.query)
+            try:
+                offset = int(q.get("offset", ["-1"])[0])
+            except ValueError:
+                offset = -1
+            res = log_slice(q.get("file", [""])[0], offset)
+            if res is None:
+                self.send_json({"error": "no such log"}, 404)
+            else:
+                self.send_json(res)
         else:
             self.send_json({"error": "not found"}, 404)
 
