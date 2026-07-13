@@ -5,10 +5,14 @@ Read-side: projects.json + live `git worktree list` + registry.json.
 Write-side: shells out to the margay CLI; never edits margay's JSON files.
 """
 import argparse
+import http.client
 import json
 import os
 import re
+import select
+import socket
 import subprocess
+import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -260,12 +264,107 @@ class Handler(BaseHTTPRequestHandler):
                        200 if ok else 500)
 
 
+HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+               "te", "trailers", "transfer-encoding", "upgrade"}
+
+
+class ProxyHandler(BaseHTTPRequestHandler):
+    """Host-header reverse proxy: *.localhost -> 127.0.0.1:<registry port>."""
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self): self._proxy()
+    def do_HEAD(self): self._proxy()
+    def do_POST(self): self._proxy()
+    def do_PUT(self): self._proxy()
+    def do_PATCH(self): self._proxy()
+    def do_DELETE(self): self._proxy()
+    def do_OPTIONS(self): self._proxy()
+
+    def _proxy(self):
+        routes, _ = build_routes()
+        host = (self.headers.get("Host") or "").split(":")[0].lower()
+        port = routes.get(host)
+        if port is None:
+            self._gateway_page(routes)
+            return
+        if (self.headers.get("Upgrade") or "").lower() == "websocket":
+            self._tunnel(port)
+            return
+        body = None
+        n = self.headers.get("Content-Length")
+        if n:
+            body = self.rfile.read(int(n))
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS}
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
+        try:
+            conn.request(self.command, self.path, body=body, headers=headers)
+            resp = conn.getresponse()
+            self.send_response(resp.status)
+            cl = resp.getheader("Content-Length")
+            for k, v in resp.getheaders():
+                if k.lower() not in HOP_HEADERS and k.lower() != "content-length":
+                    self.send_header(k, v)
+            if cl is not None:
+                self.send_header("Content-Length", cl)
+            else:
+                self.send_header("Connection", "close")
+                self.close_connection = True
+            self.end_headers()
+            if self.command != "HEAD":
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except OSError as e:
+            self._error_page("service on port %s is not answering (%s)" % (port, e))
+        finally:
+            conn.close()
+
+    def _tunnel(self, port):
+        # Task 3 replaces this stub with the real websocket splice.
+        self._error_page("websocket proxying not available yet")
+
+    def _send_html(self, body):
+        data = body.encode()
+        self.send_response(502)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _error_page(self, message):
+        self._send_html("<!doctype html><title>margay proxy</title><h1>502</h1><p>%s</p>" % message)
+
+    def _gateway_page(self, routes):
+        items = "".join('<li><a href="%s">%s</a></li>' % (u, u)
+                        for u in sorted(host_url(h) for h in routes))
+        self._send_html(
+            "<!doctype html><title>margay proxy</title>"
+            "<h1>no sandbox at this address</h1><p>live right now:</p><ul>%s</ul>"
+            % (items or "<li>nothing is running</li>"))
+
+
 def main():
     ap = argparse.ArgumentParser(prog="margay ui")
     ap.add_argument("--port", type=int, default=7997)
+    ap.add_argument("--proxy-port", type=int, default=80)
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        proxy_srv = ThreadingHTTPServer(("127.0.0.1", args.proxy_port), ProxyHandler)
+        PROXY["port"] = args.proxy_port
+        threading.Thread(target=proxy_srv.serve_forever, daemon=True).start()
+        suffix = "" if args.proxy_port == 80 else ":%d" % args.proxy_port
+        print("margay proxy → http://<worktree>.<project>.localhost%s/" % suffix)
+    except OSError as e:
+        print("margay ui: warning: cannot bind proxy port %d (%s) — "
+              "subdomain URLs disabled, falling back to port links" % (args.proxy_port, e))
+        sys.stdout.flush()
     url = "http://127.0.0.1:%d" % args.port
     print("margay ui → %s   (Ctrl-C to stop)" % url)
     if not args.no_browser:

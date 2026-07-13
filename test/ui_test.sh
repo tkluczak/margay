@@ -4,25 +4,60 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export MARGAY_HOME="$(mktemp -d)"
 mkdir -p "$MARGAY_HOME/logs"
 PORT=$(( (RANDOM % 2000) + 18000 ))
+PROXYPORT=$(( (RANDOM % 2000) + 21000 ))
+UPSTREAM_PORT=$(( (RANDOM % 2000) + 23000 ))
+UPSTREAM2_PORT=$(( (RANDOM % 2000) + 25000 ))
 BASE="http://127.0.0.1:$PORT"
 FAILS=0
 assert_eq()       { if [[ "$1" == "$2" ]]; then echo "ok: $3"; else echo "FAIL: $3 — expected [$1] got [$2]"; FAILS=$((FAILS+1)); fi; }
 assert_contains() { if [[ "$1" == *"$2"* ]]; then echo "ok: $3"; else echo "FAIL: $3 — [$1] lacks [$2]"; FAILS=$((FAILS+1)); fi; }
 
-# fixture: a real repo (for worktree enumeration) + a stale project
-REPO="$(cd "$(mktemp -d)" && pwd -P)"
-( cd "$REPO" && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init )
+# fixture: a primary repo + a worktree (for proxy routing test)
+PRIMARY="$(cd "$(mktemp -d)" && pwd -P)"
+( cd "$PRIMARY" && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init )
+REPOBASE="$(cd "$(mktemp -d)" && pwd -P)"
+REPO="$REPOBASE/wt"
+( cd "$PRIMARY" && git worktree add -b test "$REPO" main 2>/dev/null || mkdir -p "$REPO" )
 cat > "$MARGAY_HOME/projects.json" <<EOF
-[{"project":"fake","primaryPath":"$REPO","lastUp":"2026-07-13T00:00:00Z"},
+[{"project":"fake","primaryPath":"$PRIMARY","lastUp":"2026-07-13T00:00:00Z"},
  {"project":"gone","primaryPath":"/nonexistent/margay-test","lastUp":"2026-07-01T00:00:00Z"}]
 EOF
 LOG="$MARGAY_HOME/logs/fake-main-api.log"
 printf 'hello log\n' > "$LOG"
+
+# mock upstream standing in for running services (python one-liner servers)
+python3 -c '
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"upstream says hi from " + self.path.encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Upstream", "mock"); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+' "$UPSTREAM_PORT" &
+UPSTREAM_PID=$!
+python3 -c '
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"upstream says hi from " + self.path.encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Upstream", "mock"); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+' "$UPSTREAM2_PORT" &
+UPSTREAM2_PID=$!
+trap 'kill $UI_PID $UPSTREAM_PID $UPSTREAM2_PID 2>/dev/null' EXIT
+
+# Registry fixture: REPO worktree has services on the mock upstream ports, web is the leaf
 cat > "$MARGAY_HOME/registry.json" <<EOF
-[{"project":"fake","service":"api","branch":"main","worktreePath":"$REPO","port":7100,
+[{"project":"fake","service":"api","branch":"main","worktreePath":"$REPO","port":$UPSTREAM_PORT,
   "dbName":null,"uses":null,"log":"$LOG","pid":$$,"startedAt":"2026-07-13T00:00:00Z"},
- {"project":"fake","service":"dead","branch":"main","worktreePath":"$REPO","port":7101,
-  "dbName":null,"uses":null,"log":null,"pid":999999,"startedAt":"2026-07-13T00:00:00Z"}]
+ {"project":"fake","service":"web","branch":"main","worktreePath":"$REPO","port":$UPSTREAM2_PORT,
+  "dbName":null,"uses":"http://localhost:$UPSTREAM_PORT","log":null,"pid":$$,"startedAt":"2026-07-13T00:00:01Z"},
+ {"project":"fake","service":"dead","branch":"main","worktreePath":"$REPO","port":9999,
+  "dbName":null,"uses":null,"log":null,"pid":999999,"startedAt":"2026-07-13T00:00:02Z"}]
 EOF
 
 # mock margay for POST endpoints (up succeeds, down fails)
@@ -36,9 +71,9 @@ EOF
 chmod +x "$MOCK"
 export MARGAY_BIN="$MOCK"
 
-python3 "$HERE/../lib/ui.py" --port "$PORT" --no-browser &
+python3 "$HERE/../lib/ui.py" --port "$PORT" --proxy-port "$PROXYPORT" --no-browser &
 UI_PID=$!
-trap 'kill $UI_PID 2>/dev/null' EXIT
+sleep 0.5  # allow upstreams to bind first
 up=0
 for _ in $(seq 1 25); do
   curl -sf "$BASE/api/state" >/dev/null 2>&1 && { up=1; break; }
@@ -51,10 +86,12 @@ assert_eq "fake"  "$(jq -r '.projects[0].project' <<<"$st")"          "state: pr
 assert_eq "true"  "$(jq -r '.projects[0].exists'  <<<"$st")"          "state: live project exists=true"
 assert_eq "false" "$(jq -r '.projects[1].exists'  <<<"$st")"          "state: stale project exists=false"
 assert_eq "0"     "$(jq -r '.projects[1].worktrees | length' <<<"$st")" "state: stale project has no worktrees"
-assert_eq "$REPO" "$(jq -r '.projects[0].worktrees[0].path' <<<"$st")" "state: worktree enumerated live"
-assert_eq "1"     "$(jq -r '.projects[0].worktrees[0].services | length' <<<"$st")" "state: dead pid filtered"
-assert_eq "api"   "$(jq -r '.projects[0].worktrees[0].services[0].service' <<<"$st")" "state: live service present"
-assert_eq "$LOG"  "$(jq -r '.projects[0].worktrees[0].services[0].log' <<<"$st")" "state: service carries log path"
+# Find the worktree with services (should be REPO, likely at index 1)
+WT_WITH_SERVICES="$(jq -r '.projects[0].worktrees | map(select(.services | length > 0)) | .[0]' <<<"$st")"
+assert_eq "$REPO" "$(jq -r '.path' <<<"$WT_WITH_SERVICES")" "state: worktree enumerated live"
+assert_eq "2"     "$(jq -r '.services | length' <<<"$WT_WITH_SERVICES")" "state: dead pid filtered"
+assert_eq "api"   "$(jq -r '.services[0].service' <<<"$WT_WITH_SERVICES")" "state: live service present"
+assert_eq "$LOG"  "$(jq -r '.services[0].log' <<<"$WT_WITH_SERVICES")" "state: service carries log path"
 assert_eq "0"     "$(grep -c _normalized_path <<<"$st" || true)" "state: no internal keys leak"
 
 # --- /api/log ---
@@ -109,6 +146,36 @@ assert_eq "403" "$code" "request with rebound Host rejected"
 page="$(curl -s "$BASE/")"
 assert_contains "$page" "<title>margay</title>" "GET / serves the page"
 assert_contains "$page" "/api/state" "page polls /api/state"
+
+# --- proxy: host routing ---
+SLUG="$(python3 -c "import sys; sys.path.insert(0, '$HERE/../lib'); import ui; print(ui.slugify('$(basename "$REPO")'))")"
+r="$(curl -s -H "Host: web.$SLUG.fake.localhost" "http://127.0.0.1:$PROXYPORT/hello")"
+assert_contains "$r" "upstream says hi from /hello" "proxy: service host reaches its upstream"
+assert_eq "mock" "$(curl -s -o /dev/null -w '%{header_json}' -H "Host: web.$SLUG.fake.localhost" "http://127.0.0.1:$PROXYPORT/" | jq -r '.["x-upstream"][0]')" \
+  "proxy: upstream headers pass through"
+r="$(curl -s -H "Host: $SLUG.fake.localhost" "http://127.0.0.1:$PROXYPORT/root")"
+assert_contains "$r" "upstream says hi from /root" "proxy: worktree root routes to the leaf service"
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: nope.fake.localhost" "http://127.0.0.1:$PROXYPORT/")"
+assert_eq "502" "$code" "proxy: unknown host is 502"
+r="$(curl -s -H "Host: nope.fake.localhost" "http://127.0.0.1:$PROXYPORT/")"
+assert_contains "$r" "$SLUG.fake.localhost" "proxy: 502 page lists live URLs"
+
+# --- proxy: bind fallback ---
+BUSY=$(( (RANDOM % 2000) + 27000 ))
+python3 -c 'import socket,sys,time; s=socket.socket(); s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(1); time.sleep(30)' "$BUSY" &
+BUSY_PID=$!
+sleep 0.3
+TMPOUT="$(mktemp)"
+(MARGAY_BIN="$MOCK" python3 -u "$HERE/../lib/ui.py" --port $((PORT+1)) --proxy-port "$BUSY" --no-browser 2>&1) > "$TMPOUT" &
+FB_PID=$!
+sleep 1.5
+http_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$((PORT+1))/api/state" 2>/dev/null)"
+kill $FB_PID 2>/dev/null
+sleep 0.2
+out="$(cat "$TMPOUT")"
+assert_eq "200" "$http_code" "proxy: UI serves even when the proxy port is taken"
+assert_contains "$out" "cannot bind proxy port" "proxy: bind failure warning shown"
+kill $BUSY_PID 2>/dev/null
 
 # --- routing helpers (python import harness) ---
 # NOTE: this block mutates $MARGAY_HOME/projects.json and registry.json fixtures;
