@@ -99,6 +99,11 @@ code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -d '{}' "$BASE/api/unregi
 assert_eq "400" "$code" "unregister: primaryPath required"
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'not json' "$BASE/api/up")"
 assert_eq "400" "$code" "bad json is 400"
+code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: http://evil.example' -X POST \
+     -d "{\"worktreePath\":\"$REPO\"}" "$BASE/api/up")"
+assert_eq "403" "$code" "POST with cross-site Origin rejected"
+code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' "$BASE/api/state")"
+assert_eq "403" "$code" "request with rebound Host rejected"
 
 # --- served page ---
 page="$(curl -s "$BASE/")"

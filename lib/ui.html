@@ -91,7 +91,7 @@ async function act(cmd, wt) {
 }
 
 async function unregister(p) {
-  await api('/api/unregister', { primaryPath: p });
+  try { await api('/api/unregister', { primaryPath: p }); } catch (e) { /* state refresh below shows reality */ }
   await refresh();
 }
 
@@ -121,11 +121,11 @@ async function pollLogs() {
 }
 
 function svcHtml(s) {
-  const url = `http://localhost:${s.port}`;
+  const url = `http://localhost:${esc(s.port)}`;
   return `<div class="svc">
-    <span>${esc(s.service)} → <a href="${url}" target="_blank">${url}</a></span>
+    <span>${esc(s.service)} → <a href="${url}" target="_blank" rel="noopener">${url}</a></span>
     ${s.dbName ? `<span class="dim">db ${esc(s.dbName)}</span>` : ''}
-    <span class="dim">pid ${s.pid}</span>
+    <span class="dim">pid ${esc(s.pid)}</span>
     ${s.log ? `<button onclick="toggleLog('${jsq(s.log)}')">${openLogs.has(s.log) ? 'hide log' : 'log'}</button>` : ''}
   </div>
   ${s.log && openLogs.has(s.log) ? `

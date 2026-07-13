@@ -115,7 +115,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def origin_ok(self):
+        port = self.server.server_address[1]
+        host = self.headers.get("Host", "")
+        if host not in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin not in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port):
+            return False
+        return True
+
     def do_GET(self):
+        if not self.origin_ok():
+            self.send_json({"error": "forbidden"}, 403)
+            return
         url = urlparse(self.path)
         if url.path == "/":
             if not PAGE.is_file():
@@ -144,6 +157,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):
+        if not self.origin_ok():
+            self.send_json({"error": "forbidden"}, 403)
+            return
         url = urlparse(self.path)
         try:
             n = int(self.headers.get("Content-Length", 0))
@@ -155,13 +171,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path in ("/api/up", "/api/down"):
             wt = body.get("worktreePath", "")
-            if not os.path.isdir(wt):
+            if not isinstance(wt, str) or not os.path.isdir(wt):
                 self.send_json({"ok": False, "output": "no such worktree: %s" % wt}, 400)
                 return
             self.run_margay([url.path.rsplit("/", 1)[1]], cwd=wt)
         elif url.path == "/api/unregister":
             path = body.get("primaryPath", "")
-            if not path:
+            if not isinstance(path, str) or not path:
                 self.send_json({"ok": False, "output": "primaryPath required"}, 400)
                 return
             self.run_margay(["unregister", path], cwd=None)
