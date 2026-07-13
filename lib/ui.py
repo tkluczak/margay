@@ -332,7 +332,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
         req = ["%s %s HTTP/1.1" % (self.command, self.path)]
         req += ["%s: %s" % (k, v) for k, v in self.headers.items()]
-        up.sendall(("\r\n".join(req) + "\r\n\r\n").encode("latin-1"))
+        try:
+            up.sendall(("\r\n".join(req) + "\r\n\r\n").encode("latin-1"))
+        except (OSError, UnicodeEncodeError) as e:
+            try:
+                up.close()
+            except OSError:
+                pass
+            self.close_connection = True
+            self._error_page("service on port %s dropped the connection (%s)" % (port, e))
+            return
         client = self.connection
         up.settimeout(None)
         client.settimeout(None)
