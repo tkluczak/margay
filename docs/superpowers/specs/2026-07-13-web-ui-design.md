@@ -1,6 +1,6 @@
 # margay `ui` — local web UI: project registry, worktree up/down, live logs
 
-**Status:** Approved design, not yet implemented.
+**Status:** Implemented.
 **Date:** 2026-07-13
 
 ## Motivation

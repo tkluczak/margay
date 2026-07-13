@@ -20,6 +20,7 @@ margay grew out of a single-project internal tool and was generalized when a sec
 | Monorepos (several services in one tree) | `margay up` starts **all** declared services in dependency order; `margay up <service>` for one |
 | DB per sandbox | per-service: `none` / `empty` (app self-migrates) / `seed` (copy of a source DB) |
 | Processes | native processes, not containers — no image-build tax, hot reload keeps working |
+| Web UI | `margay ui` — single-file Python-stdlib server + one HTML page; projects auto-learned into `projects.json` on every `up`; all mutations shell out to the CLI |
 
 ## Config: `.margay.conf` (shell DSL, compose semantics)
 
