@@ -133,15 +133,38 @@ def build_routes():
 
 def state():
     live = [r for r in read_json(REGISTRY) if pid_alive(r.get("pid"))]
+    _, wt_info = build_routes()
+    proxy_up = PROXY["port"] is not None
     projects = []
     for p in sorted(read_json(PROJECTS), key=lambda x: x.get("project", "")):
+        if not isinstance(p, dict):
+            continue
         primary = p.get("primaryPath", "")
+        pslug = slugify(p.get("project", ""))
         exists = os.path.isdir(primary)
         wts = []
         if exists:
             for wt in worktrees(primary):
-                services = [r for r in live if r.get("worktreePath") == wt["path"]]
-                wts.append({**wt, "services": services})
+                name = os.path.basename(wt["path"])
+                is_primary = wt["path"] == primary
+                slug = slugify(name)
+                base = ("%s.localhost" % pslug if is_primary
+                        else "%s.%s.localhost" % (slug, pslug))
+                services = []
+                for r in live:
+                    if r.get("worktreePath") != wt["path"]:
+                        continue
+                    r = dict(r)
+                    svc_host = "%s.%s" % (slugify(r.get("service")), base)
+                    r["url"] = (host_url(svc_host) if proxy_up and not wt_info.get(wt["path"], {}).get("collision")
+                                else "http://localhost:%s" % r.get("port"))
+                    services.append(r)
+                info = wt_info.get(wt["path"], {})
+                wts.append({**wt, "name": name, "isPrimary": is_primary, "slug": slug,
+                            "services": services,
+                            "url": host_url(info["host"]) if proxy_up and info.get("host") else None,
+                            "hintUrl": host_url(base) if proxy_up else None,
+                            "collision": bool(info.get("collision"))})
         projects.append({**p, "exists": exists, "worktrees": wts})
     return {"projects": projects}
 

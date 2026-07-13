@@ -94,6 +94,30 @@ assert_eq "api"   "$(jq -r '.services[0].service' <<<"$WT_WITH_SERVICES")" "stat
 assert_eq "$LOG"  "$(jq -r '.services[0].log' <<<"$WT_WITH_SERVICES")" "state: service carries log path"
 assert_eq "0"     "$(grep -c _normalized_path <<<"$st" || true)" "state: no internal keys leak"
 
+# --- /api/state identity and URLs ---
+# Compute SLUG for linked worktree
+SLUG="$(python3 -c "import sys; sys.path.insert(0, '$HERE/../lib'); import ui; print(ui.slugify('$(basename "$REPO")'))")"
+# Check PRIMARY worktree (no services)
+PRIMARY_WT="$(jq '.projects[0].worktrees[] | select(.path=="'"$PRIMARY"'")' <<<"$st")"
+assert_eq "$(basename "$PRIMARY")" "$(jq -r '.name' <<<"$PRIMARY_WT")" "state: primary worktree name is dir basename"
+assert_eq "true" "$(jq -r '.isPrimary' <<<"$PRIMARY_WT")" "state: primary worktree flagged as primary"
+assert_eq "http://fake.localhost:$PROXYPORT/" "$(jq -r '.hintUrl' <<<"$PRIMARY_WT")" "state: primary hintUrl is project root"
+assert_eq "null" "$(jq -r '.url' <<<"$PRIMARY_WT")" "state: primary with no services has null url"
+assert_eq "false" "$(jq -r '.collision' <<<"$PRIMARY_WT")" "state: primary no collision"
+
+# Check REPO worktree (with services)
+REPO_WT="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$st")"
+assert_eq "false" "$(jq -r '.isPrimary' <<<"$REPO_WT")" "state: linked worktree not primary"
+assert_eq "http://$SLUG.fake.localhost:$PROXYPORT/" "$(jq -r '.url' <<<"$REPO_WT")" "state: unique leaf gives worktree its root url"
+assert_eq "http://$SLUG.fake.localhost:$PROXYPORT/" "$(jq -r '.hintUrl' <<<"$REPO_WT")" "state: linked worktree hintUrl matches base"
+assert_eq "http://api.$SLUG.fake.localhost:$PROXYPORT/" \
+  "$(jq -r '.services[] | select(.service=="api") | .url' <<<"$REPO_WT")" \
+  "state: api service url is service-prefixed subdomain"
+assert_eq "http://web.$SLUG.fake.localhost:$PROXYPORT/" \
+  "$(jq -r '.services[] | select(.service=="web") | .url' <<<"$REPO_WT")" \
+  "state: web service url is service-prefixed subdomain"
+assert_eq "false" "$(jq -r '.collision' <<<"$REPO_WT")" "state: no collision flag"
+
 # --- /api/log ---
 r="$(curl -s "$BASE/api/log?file=$LOG&offset=-1")"
 assert_eq "hello log" "$(jq -r '.data' <<<"$r" | head -1)" "log: initial tail returns content"
@@ -215,12 +239,23 @@ TMPOUT="$(mktemp)"
 (MARGAY_BIN="$MOCK" python3 -u "$HERE/../lib/ui.py" --port $((PORT+1)) --proxy-port "$BUSY" --no-browser 2>&1) > "$TMPOUT" &
 FB_PID=$!
 sleep 1.5
+st_fallback="$(curl -s "http://127.0.0.1:$((PORT+1))/api/state" 2>/dev/null)"
 http_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$((PORT+1))/api/state" 2>/dev/null)"
 kill $FB_PID 2>/dev/null
 sleep 0.2
 out="$(cat "$TMPOUT")"
 assert_eq "200" "$http_code" "proxy: UI serves even when the proxy port is taken"
 assert_contains "$out" "cannot bind proxy port" "proxy: bind failure warning shown"
+# Verify state when proxy is down: url should be null, hintUrl should be null, service urls should be port form
+if [[ -n "$st_fallback" ]]; then
+  WT_FALLBACK="$(jq '.projects[0].worktrees[] | select(.services | length > 0) | .[0:1] | .[]' <<<"$st_fallback" 2>/dev/null || echo '')"
+  if [[ -n "$WT_FALLBACK" ]]; then
+    assert_eq "null" "$(jq -r '.url' <<<"$WT_FALLBACK")" "state: proxy down → url is null"
+    assert_eq "null" "$(jq -r '.hintUrl' <<<"$WT_FALLBACK")" "state: proxy down → hintUrl is null"
+    svc_url="$(jq -r '.services[0].url' <<<"$WT_FALLBACK" 2>/dev/null || echo '')"
+    assert_contains "$svc_url" "http://localhost:" "state: proxy down → service url falls back to port form"
+  fi
+fi
 kill $BUSY_PID 2>/dev/null
 
 # --- routing helpers (python import harness) ---
