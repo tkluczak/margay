@@ -87,6 +87,8 @@ def log_slice(file_param, offset):
     logs_root = os.path.realpath(str(LOG_DIR))
     if not real.startswith(logs_root + os.sep):
         return None
+    if not os.path.isfile(real):
+        return None
     try:
         size = os.path.getsize(real)
     except OSError:

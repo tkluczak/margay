@@ -64,6 +64,9 @@ code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/log?file=$MARGAY_HOME/
 assert_eq "404" "$code" "log: ../ escape rejected"
 code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/log?file=$MARGAY_HOME/logs/nope.log&offset=-1")"
 assert_eq "404" "$code" "log: missing file is 404"
+mkdir -p "$MARGAY_HOME/logs/subdir"
+code="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/log?file=$MARGAY_HOME/logs/subdir&offset=-1")"
+assert_eq "404" "$code" "log: directory under logs is 404"
 
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi
