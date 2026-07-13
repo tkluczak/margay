@@ -11,6 +11,7 @@ BASE="http://127.0.0.1:$PORT"
 FAILS=0
 BUSY_PID=""
 FB_PID=""
+WILD_PID=""
 assert_eq()       { if [[ "$1" == "$2" ]]; then echo "ok: $3"; else echo "FAIL: $3 — expected [$1] got [$2]"; FAILS=$((FAILS+1)); fi; }
 assert_contains() { if [[ "$1" == *"$2"* ]]; then echo "ok: $3"; else echo "FAIL: $3 — [$1] lacks [$2]"; FAILS=$((FAILS+1)); fi; }
 
@@ -232,7 +233,7 @@ PYEOF
 )"
 assert_contains "$r" "ECHO:PAYLOAD-BYTES" "proxy: websocket handshake and bytes splice both ways"
 kill $WS_UP_PID 2>/dev/null
-trap 'kill ${UI_PID:-} ${UPSTREAM_PID:-} ${UPSTREAM2_PID:-} ${WS_UP_PID:-} ${BUSY_PID:-} ${FB_PID:-} 2>/dev/null' EXIT
+trap 'kill ${UI_PID:-} ${UPSTREAM_PID:-} ${UPSTREAM2_PID:-} ${WS_UP_PID:-} ${BUSY_PID:-} ${FB_PID:-} ${WILD_PID:-} 2>/dev/null' EXIT
 
 # --- proxy: bind fallback ---
 BUSY=$(( (RANDOM % 2000) + 27000 ))
@@ -257,6 +258,18 @@ assert_eq "null" "$(jq -r '.url' <<<"$WT_FALLBACK")" "fallback: worktree url is 
 assert_eq "null" "$(jq -r '.hintUrl' <<<"$WT_FALLBACK")" "fallback: hintUrl is null without proxy"
 assert_contains "$(jq -r '.services[0].url' <<<"$WT_FALLBACK")" "http://localhost:" "fallback: service url is port form"
 kill $BUSY_PID 2>/dev/null
+
+# --- proxy: wildcard bind path (MARGAY_UI_WILDCARD skips the loopback attempt) ---
+WILDPORT=$(( (RANDOM % 2000) + 29000 ))
+WILD_LOG="$MARGAY_HOME/wildcard-ui.log"
+MARGAY_UI_WILDCARD=1 MARGAY_BIN="$MOCK" python3 "$HERE/../lib/ui.py" \
+  --port $((PORT+2)) --proxy-port "$WILDPORT" --no-browser > "$WILD_LOG" 2>&1 &
+WILD_PID=$!
+for _ in $(seq 1 25); do curl -sf "http://127.0.0.1:$((PORT+2))/api/state" >/dev/null 2>&1 && break; sleep 0.2; done
+r="$(curl -s -H "Host: web.$SLUG.fake.localhost" "http://127.0.0.1:$WILDPORT/wild")"
+assert_contains "$r" "upstream says hi from /wild" "wildcard bind: proxy routes via loopback"
+assert_contains "$(cat "$WILD_LOG")" "wildcard bind, loopback-only" "wildcard bind: startup line says so"
+kill $WILD_PID 2>/dev/null
 
 # --- routing helpers (python import harness) ---
 # NOTE: this block mutates $MARGAY_HOME/projects.json and registry.json fixtures;
@@ -326,6 +339,12 @@ routes4, info4 = ui.build_routes()
 assert routes4["vp.localhost"] == 7302, routes4
 assert info4[pr]["collision"] is False, info4
 assert routes4["routes-wt.vp.localhost"] == 7301, routes4
+
+# loopback_peer truth table
+for ip in ("127.0.0.1", "127.9.9.9", "::1", "::ffff:127.0.0.1"):
+    assert ui.loopback_peer(ip), ip
+for ip in ("192.168.1.10", "10.0.0.1", "2001:db8::1", "8.8.8.8"):
+    assert not ui.loopback_peer(ip), ip
 
 print("PYHELP_OK")
 PYEOF
