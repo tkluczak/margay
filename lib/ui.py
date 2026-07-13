@@ -349,7 +349,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
             body = self.rfile.read(length)
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS}
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
+        # Dial "localhost", not 127.0.0.1 — upstreams (vite among them) may
+        # listen on ::1 only; name-based connect tries both loopback families.
+        conn = http.client.HTTPConnection("localhost", port, timeout=300)
         sent = False
         try:
             conn.request(self.command, self.path, body=body, headers=headers)
@@ -382,7 +384,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def _tunnel(self, port):
         try:
-            up = socket.create_connection(("127.0.0.1", port), timeout=10)
+            # "localhost" (not 127.0.0.1): tries both loopback families — see _proxy.
+            up = socket.create_connection(("localhost", port), timeout=10)
         except OSError as e:
             self._error_page("service on port %s is not answering (%s)" % (port, e))
             return
