@@ -1,6 +1,6 @@
 # margay ui v3 — two-pane layout (worktree list → detail), macOS :80 bind fix
 
-**Status:** Approved design, not yet implemented.
+**Status:** Implemented.
 **Date:** 2026-07-13
 **Builds on:** `2026-07-13-web-ui-v2-design.md` (merged as PR #2).
 

@@ -53,9 +53,14 @@ margay down --all          # stop everything margay started
 
 Local web control panel at `http://127.0.0.1:7997` (foreground; Ctrl-C stops).
 Shows every project you have ever run `margay up` in (auto-learned into
-`~/.margay/projects.json`) as a card per worktree — named by worktree
-directory, the primary checkout shown as **primary** — with one-click
-up/down and a shared bottom dock for live log tails and command output.
+`~/.margay/projects.json`) in a two-pane layout: a left sidebar listing all
+worktrees grouped by project (named by directory, primary checkout shown as
+**primary**) and a right pane with the selected worktree's detail. The detail
+pane shows a summary (name, branch, path, one-click up/down) with a dedicated
+URLs block (root URL and one line per running service, clickable), followed by
+auto-opened log tabs — one per running service, plus a command tab for up/down
+output; all tabs are per-worktree and tab state (active tab, follow flag) is
+remembered.
 
 While the UI runs it also serves a reverse proxy on port 80 (override with
 `--proxy-port`), giving every sandbox a stable address instead of a port:
@@ -63,7 +68,9 @@ While the UI runs it also serves a reverse proxy on port 80 (override with
 `http://<project>.localhost/`; individual services at
 `http://<service>.<worktree>.<project>.localhost/`). WebSockets are
 proxied, so HMR and realtime features work. If port 80 is taken the UI
-falls back to plain `localhost:<port>` links. Needs `python3` (stdlib
+falls back to plain `localhost:<port>` links. On macOS the proxy binds the
+wildcard address (loopback-only enforced per connection) because the OS
+restricts low-port binds on specific addresses. Needs `python3` (stdlib
 only); the rest of margay does not.
 
 ### `margay unregister [path|project]`
