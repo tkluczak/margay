@@ -5,9 +5,14 @@ Read-side: projects.json + live `git worktree list` + registry.json.
 Write-side: shells out to the margay CLI; never edits margay's JSON files.
 """
 import argparse
+import http.client
 import json
 import os
+import re
+import select
+import socket
 import subprocess
+import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -66,17 +71,100 @@ def worktrees(primary):
     return rows
 
 
+PROXY = {"port": None}   # set by main() once the proxy listener binds
+
+
+def slugify(name):
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]", "-", str(name).lower())).strip("-")
+
+
+def host_url(host):
+    if PROXY["port"] in (None, 80):
+        return "http://%s/" % host
+    return "http://%s:%d/" % (host, PROXY["port"])
+
+
+def leaf_services(rows):
+    """Rows of one worktree -> services no sibling row's `uses` points at."""
+    used = {r.get("uses") for r in rows if r.get("uses")}
+    return [r for r in rows if "http://localhost:%s" % r.get("port") not in used]
+
+
+def build_routes():
+    """Host label -> upstream port for every live service.
+
+    Root hosts: `<wtslug>.<pslug>.localhost` (or `<pslug>.localhost` for the
+    primary checkout) map to the worktree's unique dependency leaf; every
+    service also gets `<svcslug>.` prefixed onto the base. Slug collisions
+    resolve to the earliest startedAt; losers get no hosts at all.
+    Returns (routes, wt_info) with wt_info[worktreePath] =
+    {"host": root host or None, "collision": bool}.
+    """
+    live = [r for r in read_json(REGISTRY) if pid_alive(r.get("pid"))]
+    primaries = {}
+    for p in read_json(PROJECTS):
+        if isinstance(p, dict):
+            primaries[p.get("project")] = p.get("primaryPath")
+    by_wt = {}
+    for r in live:
+        by_wt.setdefault((r.get("project"), r.get("worktreePath")), []).append(r)
+    routes, info = {}, {}
+    claimed = set()
+    ordered = sorted(by_wt.items(),
+                     key=lambda kv: min(r.get("startedAt") or "" for r in kv[1]))
+    for (project, wt_path), rows in ordered:
+        pslug = slugify(project)
+        is_primary = primaries.get(project) == wt_path
+        base = ("%s.localhost" % pslug if is_primary
+                else "%s.%s.localhost" % (slugify(os.path.basename(wt_path or "")), pslug))
+        if base in claimed or base in routes:
+            info[wt_path] = {"host": None, "collision": True}
+            continue
+        claimed.add(base)
+        leaves = leaf_services(rows)
+        root = leaves[0] if len(leaves) == 1 else None
+        if root:
+            routes.setdefault(base, root.get("port"))
+        for r in rows:
+            routes.setdefault("%s.%s" % (slugify(r.get("service")), base), r.get("port"))
+        info[wt_path] = {"host": base if root else None, "collision": False}
+    return routes, info
+
+
 def state():
     live = [r for r in read_json(REGISTRY) if pid_alive(r.get("pid"))]
+    _, wt_info = build_routes()
+    proxy_up = PROXY["port"] is not None
     projects = []
     for p in sorted(read_json(PROJECTS), key=lambda x: x.get("project", "")):
+        if not isinstance(p, dict):
+            continue
         primary = p.get("primaryPath", "")
+        pslug = slugify(p.get("project", ""))
         exists = os.path.isdir(primary)
         wts = []
         if exists:
             for wt in worktrees(primary):
-                services = [r for r in live if r.get("worktreePath") == wt["path"]]
-                wts.append({**wt, "services": services})
+                name = os.path.basename(wt["path"])
+                is_primary = wt["path"] == primary
+                slug = slugify(name)
+                base = ("%s.localhost" % pslug if is_primary
+                        else "%s.%s.localhost" % (slug, pslug))
+                info = wt_info.get(wt["path"], {})
+                services = []
+                for r in live:
+                    if r.get("worktreePath") != wt["path"]:
+                        continue
+                    r = dict(r)
+                    svc_host = "%s.%s" % (slugify(r.get("service")), base)
+                    r["url"] = (host_url(svc_host) if proxy_up and not info.get("collision")
+                                else "http://localhost:%s" % r.get("port"))
+                    services.append(r)
+                wts.append({**wt, "name": name, "isPrimary": is_primary, "slug": slug,
+                            "services": services,
+                            "url": host_url(info["host"]) if proxy_up and info.get("host") else None,
+                            "hintUrl": host_url(base) if proxy_up else None,
+                            "collision": bool(info.get("collision"))})
         projects.append({**p, "exists": exists, "worktrees": wts})
     return {"projects": projects}
 
@@ -199,12 +287,167 @@ class Handler(BaseHTTPRequestHandler):
                        200 if ok else 500)
 
 
+HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+               "te", "trailers", "transfer-encoding", "upgrade"}
+
+
+class ProxyHandler(BaseHTTPRequestHandler):
+    """Host-header reverse proxy: *.localhost -> 127.0.0.1:<registry port>."""
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self): self._proxy()
+    def do_HEAD(self): self._proxy()
+    def do_POST(self): self._proxy()
+    def do_PUT(self): self._proxy()
+    def do_PATCH(self): self._proxy()
+    def do_DELETE(self): self._proxy()
+    def do_OPTIONS(self): self._proxy()
+
+    def _proxy(self):
+        if self.headers.get("Transfer-Encoding"):
+            self._simple_error(501, "chunked request bodies are not supported by this proxy")
+            return
+        routes, _ = build_routes()
+        host = (self.headers.get("Host") or "").split(":")[0].lower()
+        port = routes.get(host)
+        if port is None:
+            self._gateway_page(routes)
+            return
+        if (self.headers.get("Upgrade") or "").lower() == "websocket":
+            self._tunnel(port)
+            return
+        body = None
+        n = self.headers.get("Content-Length")
+        if n:
+            try:
+                length = int(n)
+                if length < 0:
+                    raise ValueError
+            except ValueError:
+                self._simple_error(400, "invalid Content-Length")
+                return
+            body = self.rfile.read(length)
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS}
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
+        sent = False
+        try:
+            conn.request(self.command, self.path, body=body, headers=headers)
+            resp = conn.getresponse()
+            self.send_response(resp.status)
+            sent = True
+            cl = resp.getheader("Content-Length")
+            for k, v in resp.getheaders():
+                if k.lower() not in HOP_HEADERS and k.lower() != "content-length":
+                    self.send_header(k, v)
+            if cl is not None:
+                self.send_header("Content-Length", cl)
+            else:
+                self.send_header("Connection", "close")
+                self.close_connection = True
+            self.end_headers()
+            if self.command != "HEAD":
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except OSError as e:
+            if sent:
+                self.close_connection = True
+            else:
+                self._error_page("service on port %s is not answering (%s)" % (port, e))
+        finally:
+            conn.close()
+
+    def _tunnel(self, port):
+        try:
+            up = socket.create_connection(("127.0.0.1", port), timeout=10)
+        except OSError as e:
+            self._error_page("service on port %s is not answering (%s)" % (port, e))
+            return
+        req = ["%s %s HTTP/1.1" % (self.command, self.path)]
+        req += ["%s: %s" % (k, v) for k, v in self.headers.items()]
+        try:
+            up.sendall(("\r\n".join(req) + "\r\n\r\n").encode("latin-1"))
+        except (OSError, UnicodeEncodeError) as e:
+            try:
+                up.close()
+            except OSError:
+                pass
+            self.close_connection = True
+            self._error_page("service on port %s dropped the connection (%s)" % (port, e))
+            return
+        client = self.connection
+        up.settimeout(None)
+        client.settimeout(None)
+        try:
+            while True:
+                readable, _, _ = select.select([client, up], [], [], 3600)
+                if not readable:
+                    break
+                for s in readable:
+                    data = s.recv(65536)
+                    if not data:
+                        raise ConnectionError
+                    (up if s is client else client).sendall(data)
+        except (ConnectionError, OSError):
+            pass
+        finally:
+            try:
+                up.close()
+            except OSError:
+                pass
+            self.close_connection = True
+
+    def _send_html(self, body, status=502):
+        data = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _error_page(self, message, status=502):
+        self._send_html("<!doctype html><title>margay proxy</title><h1>%d</h1><p>%s</p>" % (status, message), status)
+
+    def _simple_error(self, status, message):
+        """Reject the request outright (bad/unsupported request) and drop keep-alive."""
+        self.close_connection = True
+        self._error_page(message, status)
+
+    def _gateway_page(self, routes):
+        items = "".join('<li><a href="%s">%s</a></li>' % (u, u)
+                        for u in sorted(host_url(h) for h in routes))
+        self._send_html(
+            "<!doctype html><title>margay proxy</title>"
+            "<h1>no sandbox at this address</h1><p>live right now:</p><ul>%s</ul>"
+            % (items or "<li>nothing is running</li>"))
+
+
 def main():
     ap = argparse.ArgumentParser(prog="margay ui")
     ap.add_argument("--port", type=int, default=7997)
+    ap.add_argument("--proxy-port", type=int, default=80)
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError as e:
+        print("margay ui: cannot bind port %d (%s) — is another margay ui running? Try --port N" % (args.port, e))
+        return 1
+    try:
+        proxy_srv = ThreadingHTTPServer(("127.0.0.1", args.proxy_port), ProxyHandler)
+        PROXY["port"] = args.proxy_port
+        threading.Thread(target=proxy_srv.serve_forever, daemon=True).start()
+        suffix = "" if args.proxy_port == 80 else ":%d" % args.proxy_port
+        print("margay proxy → http://<worktree>.<project>.localhost%s/" % suffix)
+    except OSError as e:
+        print("margay ui: warning: cannot bind proxy port %d (%s) — "
+              "subdomain URLs disabled, falling back to port links" % (args.proxy_port, e))
+        sys.stdout.flush()
     url = "http://127.0.0.1:%d" % args.port
     print("margay ui → %s   (Ctrl-C to stop)" % url)
     if not args.no_browser:
@@ -213,7 +456,8 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
