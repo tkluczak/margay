@@ -202,6 +202,31 @@ def state():
     return {"projects": projects}
 
 
+def pair_options(primary, service):
+    """Live pairing candidates for `service` of the project registered at
+    `primary`, per its conf dependency (needs > uses_project)."""
+    none = {"dep": None, "optional": False, "mainPort": None, "candidates": []}
+    meta = conf_meta(primary) or {}
+    svc = next((s for s in meta.get("services", [])
+                if isinstance(s, dict) and s.get("name") == service), None)
+    if not svc:
+        return none
+    if svc.get("needs"):
+        dep_proj, dep_svc = meta.get("project"), svc["needs"]
+    elif svc.get("usesProject"):
+        dep_proj, dep_svc = svc["usesProject"].split(":", 1)
+    else:
+        return none
+    cands = [{"project": r.get("project"), "service": r.get("service"),
+              "branch": r.get("branch"), "port": r.get("port"),
+              "worktree": os.path.basename(r.get("worktreePath") or "")}
+             for r in read_json(REGISTRY)
+             if pid_alive(r.get("pid"))
+             and r.get("project") == dep_proj and r.get("service") == dep_svc]
+    return {"dep": dep_svc, "optional": bool(svc.get("usesOptional")),
+            "mainPort": svc.get("mainPort"), "candidates": cands}
+
+
 def log_slice(file_param, offset):
     """Bytes from offset (or the last TAIL_BYTES if offset<0). None = refuse."""
     real = os.path.realpath(file_param)
@@ -263,6 +288,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif url.path == "/api/state":
             self.send_json(state())
+        elif url.path == "/api/pair-options":
+            q = parse_qs(url.query)
+            self.send_json(pair_options(q.get("primary", [""])[0],
+                                        q.get("service", [""])[0]))
         elif url.path == "/api/log":
             q = parse_qs(url.query)
             try:
