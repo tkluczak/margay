@@ -44,6 +44,14 @@ margay::config_validate() {
       [[ "$val" == *:* && -n "${val%%:*}" && -n "${val#*:}" ]] \
         || { _cerr "service_${s}_uses_project must be '<project>:<service>' (got '$val')"; return 1; }
     fi
+    val="$(margay::svc_var "$s" uses_optional)"
+    if [[ -n "$val" ]]; then
+      [[ "$val" == 0 || "$val" == 1 ]] \
+        || { _cerr "service_${s}_uses_optional must be 0 or 1 (got '$val')"; return 1; }
+      if [[ "$val" == 1 && -z "$(margay::svc_var "$s" needs)$(margay::svc_var "$s" uses_project)" ]]; then
+        _cerr "service_${s}_uses_optional=1 requires service_${s}_needs or service_${s}_uses_project"; return 1
+      fi
+    fi
   done
   if (( needs_db )); then
     declare -F postgres_psql >/dev/null || { _cerr "postgres_psql() required when a service declares a db"; return 1; }

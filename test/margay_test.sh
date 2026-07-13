@@ -57,6 +57,9 @@ assert_fail try_conf unknown-needs.conf
 assert_fail try_conf seed-no-dump.conf
 assert_fail try_conf overlap.conf
 assert_fail try_conf bad-uses-project.conf
+assert_fail try_conf bad-uses-optional.conf
+assert_fail try_conf uses-optional-no-dep.conf
+assert_ok   try_conf uses-optional-valid.conf
 
 assert_eq "7100 7104" "$( (source "$HERE/fixtures/valid.conf"; margay::parse_ports "$(margay::svc_var api ports)") )" "parse_ports"
 assert_fail margay::parse_ports "abc"
