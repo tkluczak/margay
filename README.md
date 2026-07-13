@@ -47,6 +47,7 @@ margay worktrees           # this repo's worktrees + their live sandboxes/DBs
 margay down                # stop the current worktree's sandboxes
 margay down feat-payments  # stop another worktree's
 margay down --all          # stop everything margay started
+```
 
 ### `margay ui [--port N]`
 
@@ -62,7 +63,6 @@ typing it. Needs `python3` (stdlib only); the rest of margay does not.
 Remove a project from the UI's list (defaults to the current repo). Touches
 nothing else — no worktrees, databases, or processes — and the project
 re-appears on the next `margay up` there.
-```
 
 What that looks like (with the `examples/rust-vite.margay.conf` setup):
 
