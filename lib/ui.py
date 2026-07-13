@@ -78,6 +78,11 @@ def slugify(name):
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]", "-", str(name).lower())).strip("-")
 
 
+def loopback_peer(ip):
+    """True iff the TCP peer is a loopback address (guards the wildcard-bound proxy)."""
+    return ip == "::1" or ip.startswith("127.") or ip.startswith("::ffff:127.")
+
+
 def host_url(host):
     if PROXY["port"] in (None, 80):
         return "http://%s/" % host
@@ -291,9 +296,19 @@ HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriz
                "te", "trailers", "transfer-encoding", "upgrade"}
 
 
+class ProxyServer(ThreadingHTTPServer):
+    """Accept-level loopback guard: reject non-loopback peers before the
+    stdlib even reads request bytes (matters when bound to the wildcard
+    address, where any LAN host can otherwise reach the raw parser)."""
+
+    def verify_request(self, request, client_address):
+        return loopback_peer(client_address[0])
+
+
 class ProxyHandler(BaseHTTPRequestHandler):
     """Host-header reverse proxy: *.localhost -> 127.0.0.1:<registry port>."""
     protocol_version = "HTTP/1.1"
+    timeout = 30   # bound the per-read wait on the wildcard bind (slowloris guard)
 
     def log_message(self, *args):
         pass
@@ -307,6 +322,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self): self._proxy()
 
     def _proxy(self):
+        if not loopback_peer(self.client_address[0]):
+            self._simple_error(403, "loopback connections only")
+            return
         if self.headers.get("Transfer-Encoding"):
             self._simple_error(501, "chunked request bodies are not supported by this proxy")
             return
@@ -438,16 +456,32 @@ def main():
     except OSError as e:
         print("margay ui: cannot bind port %d (%s) — is another margay ui running? Try --port N" % (args.port, e))
         return 1
-    try:
-        proxy_srv = ThreadingHTTPServer(("127.0.0.1", args.proxy_port), ProxyHandler)
+    proxy_srv, wildcard, bind_err = None, False, None
+    attempts = ([("", args.proxy_port)] if os.environ.get("MARGAY_UI_WILDCARD")
+                else [("127.0.0.1", args.proxy_port), ("", args.proxy_port)])
+    for addr in attempts:
+        try:
+            proxy_srv = ProxyServer(addr, ProxyHandler)
+            wildcard = addr[0] == ""
+            break
+        except PermissionError as e:
+            # macOS: binding a low port to a SPECIFIC address needs root;
+            # the wildcard address is exempt — retry it (with the peer guard).
+            bind_err = e
+            continue
+        except OSError as e:
+            bind_err = e
+            break
+    if proxy_srv is not None:
         PROXY["port"] = args.proxy_port
         threading.Thread(target=proxy_srv.serve_forever, daemon=True).start()
         suffix = "" if args.proxy_port == 80 else ":%d" % args.proxy_port
-        print("margay proxy → http://<worktree>.<project>.localhost%s/" % suffix)
-    except OSError as e:
+        note = "   (wildcard bind, loopback-only)" if wildcard else ""
+        print("margay proxy → http://<worktree>.<project>.localhost%s/%s" % (suffix, note))
+    else:
         print("margay ui: warning: cannot bind proxy port %d (%s) — "
-              "subdomain URLs disabled, falling back to port links" % (args.proxy_port, e))
-        sys.stdout.flush()
+              "subdomain URLs disabled, falling back to port links" % (args.proxy_port, bind_err))
+    sys.stdout.flush()
     url = "http://127.0.0.1:%d" % args.port
     print("margay ui → %s   (Ctrl-C to stop)" % url)
     if not args.no_browser:
