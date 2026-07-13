@@ -25,6 +25,7 @@ margay::context() {
     set -a; # shellcheck source=/dev/null
     source "$PRIMARY/$env_file"; set +a
   fi
+  margay::projects_learn "$project" "$PRIMARY"
 }
 
 margay::prepare_db() {   # service fresh empty → echoes db name ('' if none); non-zero exit on hook failure
@@ -83,7 +84,7 @@ margay::launch() {   # service fresh empty use-overrides
     fi
     "service_${svc}_start" ) >"$log" 2>&1 &
   pid=$!
-  margay::registry_add "$(margay::registry_record "$project" "$svc" "$BRANCH" "$WORKTREE" "$port" "$db" "$uses" "$pid")"
+  margay::registry_add "$(margay::registry_record "$project" "$svc" "$BRANCH" "$WORKTREE" "$port" "$db" "$uses" "$pid" "$log")"
   echo "  ✔ $svc up → http://localhost:$port   (pid $pid, log: $log)"
 }
 
@@ -224,6 +225,23 @@ margay::cmd_worktrees() {
   done
 }
 
+margay::cmd_unregister() {
+  local q="${1:-}"
+  if [[ -z "$q" ]]; then
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      || die "not inside a git worktree (or pass a path or project name)"
+    q="$(margay::primary_worktree)"
+  fi
+  margay::projects_remove "$q" || die "no registered project matches '$q'"
+  echo "unregistered: $q   (it re-appears on the next 'margay up' there)"
+}
+
+margay::cmd_ui() {
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 not found — 'margay ui' needs Python 3 (the rest of margay does not)"
+  exec python3 "$HERE/lib/ui.py" "$@"
+}
+
 main() {
   local cmd="${1:-help}"; shift || true
   case "$cmd" in
@@ -231,8 +249,10 @@ main() {
     down)     margay::cmd_down "$@" ;;
     status)   margay::cmd_status ;;
     worktrees) margay::cmd_worktrees ;;
-    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees" ;;
-    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees" >&2
+    unregister) margay::cmd_unregister "$@" ;;
+    ui)       margay::cmd_ui "$@" ;;
+    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N]" ;;
+    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N]" >&2
               echo "margay: unknown subcommand: $cmd" >&2
               exit 1 ;;
   esac

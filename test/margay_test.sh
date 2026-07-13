@@ -24,6 +24,12 @@ margay::registry_add "$(margay::registry_record demo api a /tmp/wt-a 7100 mydb '
 margay::registry_add "$(margay::registry_record demo api b /tmp/wt-b 7101 '' '' 999999)"
 margay::registry_add "$(margay::registry_record other api x /tmp/wt-x 7100 '' '' "$$")"
 assert_eq "7100 7101" "$(margay::registry_used_ports demo api)" "used_ports scoped to project"
+assert_eq "/tmp/logs/demo-a-api.log" \
+  "$(margay::registry_record demo api a /tmp/wt-a 7100 '' '' 1 /tmp/logs/demo-a-api.log | jq -r .log)" \
+  "record stores log path"
+assert_eq "null" \
+  "$(margay::registry_record demo api a /tmp/wt-a 7100 '' '' 1 | jq -r .log)" \
+  "record log defaults to null"
 margay::registry_prune
 assert_eq "7100" "$(margay::registry_used_ports demo api)" "prune drops dead pid"
 assert_eq "7100" "$(margay::registry_last_instance demo api)" "last live instance"
@@ -154,6 +160,28 @@ assert_eq "/tmp/prj/.claude/worktrees/feat-x	feature/x	api:7100 ui:7160	mydb" \
 assert_eq "/tmp/prj/.claude/worktrees/det	HEAD	-	-" \
   "$(printf '%s\n' "$JOINED" | sed -n 3p)" "join: dead pid pruned"
 rm -f "$REGISTRY"
+
+# --- projects.json (static project registry) ---
+rm -f "$PROJECTS"
+margay::projects_learn acme /tmp/proj/acme
+margay::projects_learn beta /tmp/proj/beta
+assert_eq "2" "$(jq 'length' "$PROJECTS")" "projects: learn adds entries"
+margay::projects_learn acme2 /tmp/proj/acme
+assert_eq "2" "$(jq 'length' "$PROJECTS")" "projects: learn upserts on primaryPath"
+assert_eq "acme2" "$(jq -r '.[] | select(.primaryPath=="/tmp/proj/acme") | .project' "$PROJECTS")" \
+  "projects: upsert updates the name"
+assert_eq "true" "$(jq '[.[] | select(.primaryPath=="/tmp/proj/acme")][0].lastUp != null' "$PROJECTS")" \
+  "projects: entries carry lastUp"
+assert_ok   margay::projects_remove beta
+assert_eq "1" "$(jq 'length' "$PROJECTS")" "projects: remove by project name"
+assert_ok   margay::projects_remove /tmp/proj/acme
+assert_eq "0" "$(jq 'length' "$PROJECTS")" "projects: remove by path"
+assert_fail margay::projects_remove nothing-matches
+assert_ok margay::projects_learn acme /tmp/proj/acme
+PROJECTS_SAVED="$PROJECTS"; PROJECTS="/nonexistent-margay-dir/x.json"
+assert_ok margay::projects_learn ghost /tmp/proj/ghost 2>/dev/null   # never fails, even if the file is unwritable
+PROJECTS="$PROJECTS_SAVED"
+rm -f "$PROJECTS"
 
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi

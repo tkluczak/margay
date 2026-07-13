@@ -10,6 +10,7 @@ type die >/dev/null 2>&1 || die() { echo "margay: $*" >&2; return 1; }
 # ---- CONFIG (only project-specific values; see plan Global Constraints) ----
 MARGAY_HOME="${MARGAY_HOME:-$HOME/.margay}"
 REGISTRY="$MARGAY_HOME/registry.json"
+PROJECTS="$MARGAY_HOME/projects.json"
 LOG_DIR="$MARGAY_HOME/logs"
 # ---- END CONFIG ----
 
@@ -71,15 +72,46 @@ margay::registry_remove_by_pid() {
   jq --argjson p "$1" '[ .[] | select(.pid != $p) ]' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
 }
 
-# Args: project service branch worktree port db uses pid
+# ---- projects.json: static registry of every project ever margay'd ----
+margay::projects_init() {
+  mkdir -p "$MARGAY_HOME"
+  [[ -f "$PROJECTS" ]] || echo '[]' > "$PROJECTS"
+}
+
+# Upsert keyed on primaryPath; refreshes project name and lastUp.
+margay::projects_learn() {   # project primaryPath
+  margay::projects_init
+  local tmp; tmp="$(mktemp)"
+  jq --arg p "$1" --arg path "$2" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '[ .[] | select(.primaryPath != $path) ] + [{project:$p, primaryPath:$path, lastUp:$at}]' \
+    "$PROJECTS" > "$tmp" && mv "$tmp" "$PROJECTS"
+  return 0
+}
+
+# Remove entries whose primaryPath OR project equals the query.
+# rc 0 if something was removed, 1 otherwise.
+margay::projects_remove() {   # query
+  margay::projects_init
+  local before after tmp
+  before="$(jq 'length' "$PROJECTS")"
+  tmp="$(mktemp)"
+  jq --arg q "$1" '[ .[] | select(.primaryPath != $q and .project != $q) ]' \
+    "$PROJECTS" > "$tmp" && mv "$tmp" "$PROJECTS"
+  after="$(jq 'length' "$PROJECTS")"
+  [[ "$after" -lt "$before" ]]
+}
+
+# Args: project service branch worktree port db uses pid [log]
 margay::registry_record() {
   jq -nc \
     --arg project "$1" --arg service "$2" --arg branch "$3" --arg wt "$4" \
     --argjson port "$5" --arg db "$6" --arg uses "$7" --argjson pid "$8" \
+    --arg log "${9:-}" \
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{project:$project,service:$service,branch:$branch,worktreePath:$wt,port:$port,
       dbName:(if $db=="" then null else $db end),
       uses:(if $uses=="" then null else $uses end),
+      log:(if $log=="" then null else $log end),
       pid:$pid,startedAt:$at}'
 }
 

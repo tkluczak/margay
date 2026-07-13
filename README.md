@@ -49,6 +49,21 @@ margay down feat-payments  # stop another worktree's
 margay down --all          # stop everything margay started
 ```
 
+### `margay ui [--port N]`
+
+Local web control panel at `http://127.0.0.1:7997` (foreground; Ctrl-C stops).
+Shows every project you have ever run `margay up` in (auto-learned into
+`~/.margay/projects.json`), each project's worktrees, running services with
+clickable ports, live log tails, and one-click up/down per worktree. All
+actions go through the margay CLI — nothing the UI does is different from
+typing it. Needs `python3` (stdlib only); the rest of margay does not.
+
+### `margay unregister [path|project]`
+
+Remove a project from the UI's list (defaults to the current repo). Touches
+nothing else — no worktrees, databases, or processes — and the project
+re-appears on the next `margay up` there.
+
 What that looks like (with the `examples/rust-vite.margay.conf` setup):
 
 ```
