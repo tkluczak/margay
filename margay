@@ -25,6 +25,7 @@ margay::context() {
     set -a; # shellcheck source=/dev/null
     source "$PRIMARY/$env_file"; set +a
   fi
+  margay::projects_learn "$project" "$PRIMARY"
 }
 
 margay::prepare_db() {   # service fresh empty → echoes db name ('' if none); non-zero exit on hook failure
@@ -138,7 +139,6 @@ margay::cmd_up() {
       margay::launch "$svc" "$fresh" "$empty" "${use# }"
     fi
   done
-  margay::projects_learn "$project" "$PRIMARY"
 }
 
 margay::cmd_down() {

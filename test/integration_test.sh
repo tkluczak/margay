@@ -108,7 +108,8 @@ else echo "FAIL: margay help did not exit 0"; FAILS=$((FAILS+1)); fi
 # --- unregister ---
 unreg="$(cd "$REPO" && "$MARGAY" unregister 2>&1)"
 assert_contains "$unreg" "unregistered" "unregister (no arg) removes current repo"
-assert_contains "$(jq 'length' "$MARGAY_HOME/projects.json")" "0" "projects.json emptied"
+# After unregister, projects.json should only have the failproj entry from REPO2 (auto-learn now happens in margay::context, before launches can fail)
+assert_contains "$(jq 'length' "$MARGAY_HOME/projects.json")" "1" "projects.json has failproj from REPO2"
 bad="$("$MARGAY" unregister nothing-here 2>&1)" \
   && { echo "FAIL: unregister miss should fail"; FAILS=$((FAILS+1)); } || true
 assert_contains "$bad" "no registered project matches" "unregister miss error"
