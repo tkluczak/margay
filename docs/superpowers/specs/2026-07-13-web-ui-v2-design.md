@@ -1,6 +1,6 @@
 # margay ui v2 — subdomain proxy, worktree-name identity, card-grid + dock layout
 
-**Status:** Approved design, not yet implemented.
+**Status:** Implemented.
 **Date:** 2026-07-13
 **Builds on:** `2026-07-13-web-ui-design.md` (shipped as PR #1, branch `worktree-web-ui`).
 
