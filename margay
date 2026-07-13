@@ -236,6 +236,12 @@ margay::cmd_unregister() {
   echo "unregistered: $q   (it re-appears on the next 'margay up' there)"
 }
 
+margay::cmd_ui() {
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 not found — 'margay ui' needs Python 3 (the rest of margay does not)"
+  exec python3 "$HERE/lib/ui.py" "$@"
+}
+
 main() {
   local cmd="${1:-help}"; shift || true
   case "$cmd" in
@@ -244,6 +250,7 @@ main() {
     status)   margay::cmd_status ;;
     worktrees) margay::cmd_worktrees ;;
     unregister) margay::cmd_unregister "$@" ;;
+    ui)       margay::cmd_ui "$@" ;;
     help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N]" ;;
     *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N]" >&2
               echo "margay: unknown subcommand: $cmd" >&2
