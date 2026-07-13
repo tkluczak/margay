@@ -10,7 +10,7 @@ assert_eq()       { if [[ "$1" == "$2" ]]; then echo "ok: $3"; else echo "FAIL: 
 assert_contains() { if [[ "$1" == *"$2"* ]]; then echo "ok: $3"; else echo "FAIL: $3 — [$1] lacks [$2]"; FAILS=$((FAILS+1)); fi; }
 
 # fixture: a real repo (for worktree enumeration) + a stale project
-REPO="$(mktemp -d)"
+REPO="$(cd "$(mktemp -d)" && pwd -P)"
 ( cd "$REPO" && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init )
 cat > "$MARGAY_HOME/projects.json" <<EOF
 [{"project":"fake","primaryPath":"$REPO","lastUp":"2026-07-13T00:00:00Z"},
@@ -44,6 +44,7 @@ assert_eq "$REPO" "$(jq -r '.projects[0].worktrees[0].path' <<<"$st")" "state: w
 assert_eq "1"     "$(jq -r '.projects[0].worktrees[0].services | length' <<<"$st")" "state: dead pid filtered"
 assert_eq "api"   "$(jq -r '.projects[0].worktrees[0].services[0].service' <<<"$st")" "state: live service present"
 assert_eq "$LOG"  "$(jq -r '.projects[0].worktrees[0].services[0].log' <<<"$st")" "state: service carries log path"
+assert_eq "0"     "$(grep -c _normalized_path <<<"$st" || true)" "state: no internal keys leak"
 
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi

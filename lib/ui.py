@@ -12,7 +12,7 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 MARGAY_HOME = Path(os.environ.get("MARGAY_HOME", str(Path.home() / ".margay")))
 PROJECTS = MARGAY_HOME / "projects.json"
@@ -68,32 +68,15 @@ def worktrees(primary):
 
 def state():
     live = [r for r in read_json(REGISTRY) if pid_alive(r.get("pid"))]
-    # Normalize worktreePath in live records for path comparison (macOS resolves symlinks)
-    for r in live:
-        if r.get("worktreePath"):
-            r["_normalized_path"] = str(Path(r["worktreePath"]).resolve())
-
-    projects_data = read_json(PROJECTS)
-    # Create a map from resolved primary path back to original primary path
-    primary_map = {}
-    for p in projects_data:
-        orig_primary = p.get("primaryPath", "")
-        if orig_primary:
-            resolved_primary = str(Path(orig_primary).resolve())
-            primary_map[resolved_primary] = orig_primary
-
     projects = []
-    for p in sorted(projects_data, key=lambda x: x.get("project", "")):
+    for p in sorted(read_json(PROJECTS), key=lambda x: x.get("project", "")):
         primary = p.get("primaryPath", "")
         exists = os.path.isdir(primary)
         wts = []
         if exists:
             for wt in worktrees(primary):
-                normalized_wt_path = str(Path(wt["path"]).resolve())
-                services = [r for r in live if r.get("_normalized_path") == normalized_wt_path]
-                # Preserve the path format: if we have a mapping, use it; otherwise use the resolved path
-                wt_path = primary_map.get(normalized_wt_path, wt["path"])
-                wts.append({**wt, "path": wt_path, "services": services})
+                services = [r for r in live if r.get("worktreePath") == wt["path"]]
+                wts.append({**wt, "services": services})
         projects.append({**p, "exists": exists, "worktrees": wts})
     return {"projects": projects}
 
