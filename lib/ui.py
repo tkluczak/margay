@@ -7,6 +7,7 @@ Write-side: shells out to the margay CLI; never edits margay's JSON files.
 import argparse
 import json
 import os
+import re
 import subprocess
 import threading
 import webbrowser
@@ -64,6 +65,64 @@ def worktrees(primary):
     if path:
         rows.append({"path": path, "branch": branch or "HEAD"})
     return rows
+
+
+PROXY = {"port": None}   # set by main() once the proxy listener binds
+
+
+def slugify(name):
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]", "-", str(name).lower())).strip("-")
+
+
+def host_url(host):
+    if PROXY["port"] in (None, 80):
+        return "http://%s/" % host
+    return "http://%s:%d/" % (host, PROXY["port"])
+
+
+def leaf_services(rows):
+    """Rows of one worktree -> services no sibling row's `uses` points at."""
+    used = {r.get("uses") for r in rows if r.get("uses")}
+    return [r for r in rows if "http://localhost:%s" % r.get("port") not in used]
+
+
+def build_routes():
+    """Host label -> upstream port for every live service.
+
+    Root hosts: `<wtslug>.<pslug>.localhost` (or `<pslug>.localhost` for the
+    primary checkout) map to the worktree's unique dependency leaf; every
+    service also gets `<svcslug>.` prefixed onto the base. Slug collisions
+    resolve to the earliest startedAt; losers get no hosts at all.
+    Returns (routes, wt_info) with wt_info[worktreePath] =
+    {"host": root host or None, "collision": bool}.
+    """
+    live = [r for r in read_json(REGISTRY) if pid_alive(r.get("pid"))]
+    primaries = {}
+    for p in read_json(PROJECTS):
+        if isinstance(p, dict):
+            primaries[p.get("project")] = p.get("primaryPath")
+    by_wt = {}
+    for r in live:
+        by_wt.setdefault((r.get("project"), r.get("worktreePath")), []).append(r)
+    routes, info = {}, {}
+    ordered = sorted(by_wt.items(),
+                     key=lambda kv: min(r.get("startedAt") or "" for r in kv[1]))
+    for (project, wt_path), rows in ordered:
+        pslug = slugify(project)
+        is_primary = primaries.get(project) == wt_path
+        base = ("%s.localhost" % pslug if is_primary
+                else "%s.%s.localhost" % (slugify(os.path.basename(wt_path or "")), pslug))
+        if base in routes or any(h.endswith("." + base) for h in routes):
+            info[wt_path] = {"host": None, "collision": True}
+            continue
+        leaves = leaf_services(rows)
+        root = leaves[0] if len(leaves) == 1 else None
+        if root:
+            routes[base] = root.get("port")
+        for r in rows:
+            routes["%s.%s" % (slugify(r.get("service")), base)] = r.get("port")
+        info[wt_path] = {"host": base if root else None, "collision": False}
+    return routes, info
 
 
 def state():

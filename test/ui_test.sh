@@ -110,5 +110,68 @@ page="$(curl -s "$BASE/")"
 assert_contains "$page" "<title>margay</title>" "GET / serves the page"
 assert_contains "$page" "/api/state" "page polls /api/state"
 
+# --- routing helpers (python import harness) ---
+# NOTE: this block mutates $MARGAY_HOME/projects.json and registry.json fixtures;
+# it must run AFTER all running-server assertions
+pyhelp() {
+  MARGAY_HOME="$MARGAY_HOME" python3 - "$HERE/../lib" <<'PYEOF'
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import ui
+
+assert ui.slugify("Feature/Analytics BC") == "feature-analytics-bc", ui.slugify("Feature/Analytics BC")
+assert ui.slugify("wt_a..b") == "wt-a-b", ui.slugify("wt_a..b")
+
+home = os.environ["MARGAY_HOME"]
+wt = "/tmp/routes-wt"; pr = "/tmp/routes-primary"
+rows = [
+  {"project":"vp","service":"backend","worktreePath":wt,"port":8380,"uses":None,
+   "pid":os.getpid(),"startedAt":"2026-07-13T10:00:00Z","log":None,"branch":"b","dbName":None},
+  {"project":"vp","service":"web","worktreePath":wt,"port":5373,"uses":"http://localhost:8380",
+   "pid":os.getpid(),"startedAt":"2026-07-13T10:00:01Z","log":None,"branch":"b","dbName":None},
+]
+leaves = ui.leaf_services(rows)
+assert [r["service"] for r in leaves] == ["web"], leaves   # backend is used by web
+
+json.dump([{"project":"vp","primaryPath":pr,"lastUp":"2026-07-13T00:00:00Z"}],
+          open(home + "/projects.json", "w"))
+prim = [{"project":"vp","service":"api","worktreePath":pr,"port":7100,"uses":None,
+         "pid":os.getpid(),"startedAt":"2026-07-13T09:00:00Z","log":None,"branch":"main","dbName":None}]
+json.dump(rows + prim, open(home + "/registry.json", "w"))
+
+routes, info = ui.build_routes()
+assert routes["routes-wt.vp.localhost"] == 5373, routes            # unique leaf owns the root
+assert routes["web.routes-wt.vp.localhost"] == 5373, routes
+assert routes["backend.routes-wt.vp.localhost"] == 8380, routes
+assert routes["vp.localhost"] == 7100, routes                      # primary = project root
+assert routes["api.vp.localhost"] == 7100, routes
+assert info[wt] == {"host": "routes-wt.vp.localhost", "collision": False}, info
+
+# two independent services -> no root mapping
+rows2 = [dict(rows[0], uses=None), dict(rows[1], uses=None)]
+json.dump(rows2, open(home + "/registry.json", "w"))
+routes2, info2 = ui.build_routes()
+assert "routes-wt.vp.localhost" not in routes2, routes2
+assert info2[wt]["host"] is None and info2[wt]["collision"] is False, info2
+
+# slug collision: wt_a vs wt-a — earliest startedAt wins
+ca = dict(rows[0], worktreePath="/tmp/col/wt_a", startedAt="2026-07-13T08:00:00Z", port=7201)
+cb = dict(rows[0], worktreePath="/tmp/col/wt-a", startedAt="2026-07-13T08:30:00Z", port=7202)
+json.dump([ca, cb], open(home + "/registry.json", "w"))
+routes3, info3 = ui.build_routes()
+assert routes3["wt-a.vp.localhost"] == 7201, routes3
+assert info3["/tmp/col/wt_a"]["host"] == "wt-a.vp.localhost", info3
+assert info3["/tmp/col/wt-a"] == {"host": None, "collision": True}, info3
+
+assert ui.host_url("x.vp.localhost") == "http://x.vp.localhost/", "PROXY None -> bare host"
+ui.PROXY["port"] = 80
+assert ui.host_url("x.vp.localhost") == "http://x.vp.localhost/", ui.host_url("x.vp.localhost")
+ui.PROXY["port"] = 8123
+assert ui.host_url("x.vp.localhost") == "http://x.vp.localhost:8123/", ui.host_url("x.vp.localhost")
+print("PYHELP_OK")
+PYEOF
+}
+out="$(pyhelp 2>&1)"; assert_contains "$out" "PYHELP_OK" "routing helpers pass python assertions"
+
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi
