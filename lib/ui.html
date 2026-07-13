@@ -137,14 +137,10 @@ function syncTabs(wt) {
     const key = 'log:' + s.service;
     if (!st.tabs.has(key) && s.log) {
       st.tabs.set(key, { kind:'log', title: s.service, logPath: s.log,
-                         offset:-1, buf:'', follow:true, err:false,
-                         meta: [ s.url ? {text:s.url, href:s.url} : null,
-                                 {text:'pid ' + s.pid},
-                                 s.dbName ? {text:'db ' + s.dbName} : null ].filter(Boolean) });
+                         offset:-1, buf:'', follow:true, err:false });
     } else if (st.tabs.has(key)) {
       const t = st.tabs.get(key);
-      t.meta = [ s.url ? {text:s.url, href:s.url} : null, {text:'pid ' + s.pid},
-                 s.dbName ? {text:'db ' + s.dbName} : null ].filter(Boolean);
+      if (t.logPath !== s.log) { t.logPath = s.log; t.offset = -1; t.buf = ''; }
     }
   }
   if (!st.active || !st.tabs.has(st.active)) st.active = st.tabs.keys().next().value || null;
@@ -197,17 +193,20 @@ function renderTabs() {
 
 async function pollLogs() {
   if (!selected) return;
-  const st = tabsFor(selected);
+  const sel = selected;
+  const st = tabsFor(sel);
   for (const [key, t] of st.tabs) {
     if (t.kind !== 'log') continue;
     try {
       const r = await fetch('/api/log?file=' + encodeURIComponent(t.logPath) + '&offset=' + t.offset);
+      if (sel !== selected) return;
       if (r.status !== 200) continue;
       const data = await r.json();
+      if (sel !== selected) return;
       if (data.offset < t.offset) t.buf = data.data; else t.buf += data.data;
       if (t.buf.length > 262144) t.buf = t.buf.slice(-262144);
       t.offset = data.offset;
-      const pre = paneFor(selected, key);
+      const pre = paneFor(sel, key);
       if (data.data || pre.textContent === '') {
         const stick = t.follow;
         pre.textContent = t.buf;
@@ -310,7 +309,7 @@ function renderSummary() {
   const { wt } = hit;
   const rows = [];
   if (wt.url) rows.push(['root', '<a href="' + esc(wt.url) + '" target="_blank" rel="noopener">' + esc(wt.url) + '</a>']);
-  else if (wt.hintUrl) rows.push(['root', '<span class="hint">' + esc(wt.hintUrl) + ' (not running)</span>']);
+  else if (!wt.services.length && wt.hintUrl) rows.push(['root', '<span class="hint">' + esc(wt.hintUrl) + ' (not running)</span>']);
   for (const s of wt.services)
     rows.push([esc(s.service), '<a href="' + esc(s.url) + '" target="_blank" rel="noopener">' + esc(s.url) + '</a>']);
   const meta = wt.services.map(s =>

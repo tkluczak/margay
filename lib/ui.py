@@ -296,9 +296,19 @@ HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriz
                "te", "trailers", "transfer-encoding", "upgrade"}
 
 
+class ProxyServer(ThreadingHTTPServer):
+    """Accept-level loopback guard: reject non-loopback peers before the
+    stdlib even reads request bytes (matters when bound to the wildcard
+    address, where any LAN host can otherwise reach the raw parser)."""
+
+    def verify_request(self, request, client_address):
+        return loopback_peer(client_address[0])
+
+
 class ProxyHandler(BaseHTTPRequestHandler):
     """Host-header reverse proxy: *.localhost -> 127.0.0.1:<registry port>."""
     protocol_version = "HTTP/1.1"
+    timeout = 30   # bound the per-read wait on the wildcard bind (slowloris guard)
 
     def log_message(self, *args):
         pass
@@ -451,7 +461,7 @@ def main():
                 else [("127.0.0.1", args.proxy_port), ("", args.proxy_port)])
     for addr in attempts:
         try:
-            proxy_srv = ThreadingHTTPServer(addr, ProxyHandler)
+            proxy_srv = ProxyServer(addr, ProxyHandler)
             wildcard = addr[0] == ""
             break
         except PermissionError as e:
