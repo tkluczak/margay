@@ -199,6 +199,18 @@ assert_eq "false" "$(jq -r '.ok' <<<"$r")" "down: ok=false on failure"
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
      -d '{"worktreePath":"/nonexistent/margay-test"}' "$BASE/api/up")"
 assert_eq "400" "$code" "up: missing worktree dir is 400"
+
+# --- /api/up service + use passthrough (ui v4) ---
+r="$(curl -s -X POST -d "{\"worktreePath\":\"$REPO\",\"service\":\"web\",\"use\":{\"name\":\"api\",\"value\":\"1234\"}}" "$BASE/api/up")"
+assert_contains "$(jq -r '.output' <<<"$r")" "mock: up web --use api=1234" "up: forwards service and --use pairing"
+r="$(curl -s -X POST -d "{\"worktreePath\":\"$REPO\",\"service\":\"web\",\"use\":{\"name\":\"api\",\"value\":\"none\"}}" "$BASE/api/up")"
+assert_contains "$(jq -r '.output' <<<"$r")" "mock: up web --use api=none" "up: forwards --use none"
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+     -d "{\"worktreePath\":\"$REPO\",\"use\":{\"name\":\"api\",\"value\":\"\$(rm -rf /)\"}}" "$BASE/api/up")"
+assert_eq "400" "$code" "up: non port/none use value rejected"
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+     -d "{\"worktreePath\":\"$REPO\",\"service\":\"web; rm\"}" "$BASE/api/up")"
+assert_eq "400" "$code" "up: bad service name rejected"
 r="$(curl -s -X POST -d '{"primaryPath":"/nonexistent/margay-test"}' "$BASE/api/unregister")"
 assert_contains "$(jq -r '.output' <<<"$r")" "mock: unregister /nonexistent/margay-test" \
   "unregister: shells out to margay unregister <path>"

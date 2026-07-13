@@ -324,7 +324,25 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(wt, str) or not os.path.isdir(wt):
                 self.send_json({"ok": False, "output": "no such worktree: %s" % wt}, 400)
                 return
-            self.run_margay([url.path.rsplit("/", 1)[1]], cwd=wt)
+            argv = [url.path.rsplit("/", 1)[1]]
+            if url.path == "/api/up":
+                svc = body.get("service")
+                if svc is not None:
+                    if not (isinstance(svc, str) and re.fullmatch(r"[A-Za-z0-9_-]+", svc)):
+                        self.send_json({"ok": False, "output": "bad service name"}, 400)
+                        return
+                    argv.append(svc)
+                use = body.get("use")
+                if use is not None:
+                    name = use.get("name") if isinstance(use, dict) else None
+                    value = use.get("value") if isinstance(use, dict) else None
+                    if not (isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_-]+", name)
+                            and isinstance(value, str)
+                            and re.fullmatch(r"[0-9]+|none", value)):
+                        self.send_json({"ok": False, "output": "bad use pairing"}, 400)
+                        return
+                    argv += ["--use", "%s=%s" % (name, value)]
+            self.run_margay(argv, cwd=wt)
         elif url.path == "/api/unregister":
             path = body.get("primaryPath", "")
             if not isinstance(path, str) or not path:
