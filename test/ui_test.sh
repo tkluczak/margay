@@ -247,15 +247,10 @@ out="$(cat "$TMPOUT")"
 assert_eq "200" "$http_code" "proxy: UI serves even when the proxy port is taken"
 assert_contains "$out" "cannot bind proxy port" "proxy: bind failure warning shown"
 # Verify state when proxy is down: url should be null, hintUrl should be null, service urls should be port form
-if [[ -n "$st_fallback" ]]; then
-  WT_FALLBACK="$(jq '.projects[0].worktrees[] | select(.services | length > 0) | .[0:1] | .[]' <<<"$st_fallback" 2>/dev/null || echo '')"
-  if [[ -n "$WT_FALLBACK" ]]; then
-    assert_eq "null" "$(jq -r '.url' <<<"$WT_FALLBACK")" "state: proxy down → url is null"
-    assert_eq "null" "$(jq -r '.hintUrl' <<<"$WT_FALLBACK")" "state: proxy down → hintUrl is null"
-    svc_url="$(jq -r '.services[0].url' <<<"$WT_FALLBACK" 2>/dev/null || echo '')"
-    assert_contains "$svc_url" "http://localhost:" "state: proxy down → service url falls back to port form"
-  fi
-fi
+WT_FALLBACK="$(jq '.projects[0].worktrees | map(select(.services | length > 0)) | .[0]' <<<"$st_fallback")"
+assert_eq "null" "$(jq -r '.url' <<<"$WT_FALLBACK")" "fallback: worktree url is null without proxy"
+assert_eq "null" "$(jq -r '.hintUrl' <<<"$WT_FALLBACK")" "fallback: hintUrl is null without proxy"
+assert_contains "$(jq -r '.services[0].url' <<<"$WT_FALLBACK")" "http://localhost:" "fallback: service url is port form"
 kill $BUSY_PID 2>/dev/null
 
 # --- routing helpers (python import harness) ---
