@@ -54,6 +54,7 @@
 "use strict";
 const esc = s => String(s).replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const jsq = s => esc(String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\u0027").replace(/"/g, '\\u0022'));
 const openLogs = new Map();   // log path -> {offset, buf, follow}
 const openOut  = new Map();   // worktreePath -> last up/down output
 const busy     = new Set();   // worktreePaths with an in-flight up/down
@@ -78,9 +79,14 @@ async function refresh() {
 
 async function act(cmd, wt) {
   busy.add(wt); openOut.delete(wt); render();
-  const { data } = await api('/api/' + cmd, { worktreePath: wt });
-  busy.delete(wt);
-  openOut.set(wt, data.output || '(no output)');
+  try {
+    const { data } = await api('/api/' + cmd, { worktreePath: wt });
+    openOut.set(wt, data.output || '(no output)');
+  } catch (e) {
+    openOut.set(wt, 'request failed: ' + e);
+  } finally {
+    busy.delete(wt);
+  }
   await refresh();
 }
 
@@ -120,11 +126,11 @@ function svcHtml(s) {
     <span>${esc(s.service)} → <a href="${url}" target="_blank">${url}</a></span>
     ${s.dbName ? `<span class="dim">db ${esc(s.dbName)}</span>` : ''}
     <span class="dim">pid ${s.pid}</span>
-    ${s.log ? `<button onclick="toggleLog('${esc(s.log)}')">${openLogs.has(s.log) ? 'hide log' : 'log'}</button>` : ''}
+    ${s.log ? `<button onclick="toggleLog('${jsq(s.log)}')">${openLogs.has(s.log) ? 'hide log' : 'log'}</button>` : ''}
   </div>
   ${s.log && openLogs.has(s.log) ? `
     <label class="follow"><input type="checkbox" ${openLogs.get(s.log).follow ? 'checked' : ''}
-      onchange="openLogs.get('${esc(s.log)}').follow=this.checked"> follow</label>
+      onchange="openLogs.get('${jsq(s.log)}').follow=this.checked"> follow</label>
     <pre class="pane" data-log="${esc(s.log)}">${esc(openLogs.get(s.log).buf)}</pre>` : ''}`;
 }
 
@@ -137,8 +143,8 @@ function wtHtml(wt) {
       <span class="wtpath">${esc(wt.path)}</span>
       ${isBusy ? '<span class="spin">working…</span>'
         : running
-          ? `<button class="down" onclick="act('down','${esc(wt.path)}')">down</button>`
-          : `<button class="up" onclick="act('up','${esc(wt.path)}')">up</button>`}
+          ? `<button class="down" onclick="act('down','${jsq(wt.path)}')">down</button>`
+          : `<button class="up" onclick="act('up','${jsq(wt.path)}')">up</button>`}
     </div>
     ${wt.services.map(svcHtml).join('')}
     ${openOut.has(wt.path) ? `
@@ -160,7 +166,7 @@ function render() {
         <b>${esc(p.project)}</b>
         <span class="path">${esc(p.primaryPath)}${p.exists ? '' : ' (missing)'}</span>
         <button class="x" title="remove from this list (re-appears on next up)"
-          onclick="unregister('${esc(p.primaryPath)}')">✕</button>
+          onclick="unregister('${jsq(p.primaryPath)}')">✕</button>
       </div>
       ${p.exists ? p.worktrees.map(wtHtml).join('') : ''}
     </div>`).join('');
