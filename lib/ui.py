@@ -150,16 +150,16 @@ def state():
                 slug = slugify(name)
                 base = ("%s.localhost" % pslug if is_primary
                         else "%s.%s.localhost" % (slug, pslug))
+                info = wt_info.get(wt["path"], {})
                 services = []
                 for r in live:
                     if r.get("worktreePath") != wt["path"]:
                         continue
                     r = dict(r)
                     svc_host = "%s.%s" % (slugify(r.get("service")), base)
-                    r["url"] = (host_url(svc_host) if proxy_up and not wt_info.get(wt["path"], {}).get("collision")
+                    r["url"] = (host_url(svc_host) if proxy_up and not info.get("collision")
                                 else "http://localhost:%s" % r.get("port"))
                     services.append(r)
-                info = wt_info.get(wt["path"], {})
                 wts.append({**wt, "name": name, "isPrimary": is_primary, "slug": slug,
                             "services": services,
                             "url": host_url(info["host"]) if proxy_up and info.get("host") else None,
@@ -307,6 +307,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self): self._proxy()
 
     def _proxy(self):
+        if self.headers.get("Transfer-Encoding"):
+            self._simple_error(501, "chunked request bodies are not supported by this proxy")
+            return
         routes, _ = build_routes()
         host = (self.headers.get("Host") or "").split(":")[0].lower()
         port = routes.get(host)
@@ -319,13 +322,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
         body = None
         n = self.headers.get("Content-Length")
         if n:
-            body = self.rfile.read(int(n))
+            try:
+                length = int(n)
+                if length < 0:
+                    raise ValueError
+            except ValueError:
+                self._simple_error(400, "invalid Content-Length")
+                return
+            body = self.rfile.read(length)
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_HEADERS}
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
+        sent = False
         try:
             conn.request(self.command, self.path, body=body, headers=headers)
             resp = conn.getresponse()
             self.send_response(resp.status)
+            sent = True
             cl = resp.getheader("Content-Length")
             for k, v in resp.getheaders():
                 if k.lower() not in HOP_HEADERS and k.lower() != "content-length":
@@ -343,7 +355,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
         except OSError as e:
-            self._error_page("service on port %s is not answering (%s)" % (port, e))
+            if sent:
+                self.close_connection = True
+            else:
+                self._error_page("service on port %s is not answering (%s)" % (port, e))
         finally:
             conn.close()
 
@@ -387,16 +402,21 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 pass
             self.close_connection = True
 
-    def _send_html(self, body):
+    def _send_html(self, body, status=502):
         data = body.encode()
-        self.send_response(502)
+        self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
-    def _error_page(self, message):
-        self._send_html("<!doctype html><title>margay proxy</title><h1>502</h1><p>%s</p>" % message)
+    def _error_page(self, message, status=502):
+        self._send_html("<!doctype html><title>margay proxy</title><h1>%d</h1><p>%s</p>" % (status, message), status)
+
+    def _simple_error(self, status, message):
+        """Reject the request outright (bad/unsupported request) and drop keep-alive."""
+        self.close_connection = True
+        self._error_page(message, status)
 
     def _gateway_page(self, routes):
         items = "".join('<li><a href="%s">%s</a></li>' % (u, u)
@@ -413,7 +433,11 @@ def main():
     ap.add_argument("--proxy-port", type=int, default=80)
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError as e:
+        print("margay ui: cannot bind port %d (%s) — is another margay ui running? Try --port N" % (args.port, e))
+        return 1
     try:
         proxy_srv = ThreadingHTTPServer(("127.0.0.1", args.proxy_port), ProxyHandler)
         PROXY["port"] = args.proxy_port
@@ -432,7 +456,8 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -251,8 +251,8 @@ main() {
     worktrees) margay::cmd_worktrees ;;
     unregister) margay::cmd_unregister "$@" ;;
     ui)       margay::cmd_ui "$@" ;;
-    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N]" ;;
-    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N]" >&2
+    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" ;;
+    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" >&2
               echo "margay: unknown subcommand: $cmd" >&2
               exit 1 ;;
   esac

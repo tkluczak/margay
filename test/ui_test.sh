@@ -9,6 +9,8 @@ UPSTREAM_PORT=$(( (RANDOM % 2000) + 23000 ))
 UPSTREAM2_PORT=$(( (RANDOM % 2000) + 25000 ))
 BASE="http://127.0.0.1:$PORT"
 FAILS=0
+BUSY_PID=""
+FB_PID=""
 assert_eq()       { if [[ "$1" == "$2" ]]; then echo "ok: $3"; else echo "FAIL: $3 — expected [$1] got [$2]"; FAILS=$((FAILS+1)); fi; }
 assert_contains() { if [[ "$1" == *"$2"* ]]; then echo "ok: $3"; else echo "FAIL: $3 — [$1] lacks [$2]"; FAILS=$((FAILS+1)); fi; }
 
@@ -230,7 +232,7 @@ PYEOF
 )"
 assert_contains "$r" "ECHO:PAYLOAD-BYTES" "proxy: websocket handshake and bytes splice both ways"
 kill $WS_UP_PID 2>/dev/null
-trap 'kill $UI_PID $UPSTREAM_PID $UPSTREAM2_PID $WS_UP_PID 2>/dev/null' EXIT
+trap 'kill ${UI_PID:-} ${UPSTREAM_PID:-} ${UPSTREAM2_PID:-} ${WS_UP_PID:-} ${BUSY_PID:-} ${FB_PID:-} 2>/dev/null' EXIT
 
 # --- proxy: bind fallback ---
 BUSY=$(( (RANDOM % 2000) + 27000 ))
@@ -241,8 +243,9 @@ TMPOUT="$(mktemp)"
 (MARGAY_BIN="$MOCK" python3 -u "$HERE/../lib/ui.py" --port $((PORT+1)) --proxy-port "$BUSY" --no-browser 2>&1) > "$TMPOUT" &
 FB_PID=$!
 sleep 1.5
-st_fallback="$(curl -s "http://127.0.0.1:$((PORT+1))/api/state" 2>/dev/null)"
-http_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$((PORT+1))/api/state" 2>/dev/null)"
+resp_fallback="$(curl -s -w '\n%{http_code}' "http://127.0.0.1:$((PORT+1))/api/state" 2>/dev/null)"
+http_code="${resp_fallback##*$'\n'}"
+st_fallback="${resp_fallback%$'\n'*}"
 kill $FB_PID 2>/dev/null
 sleep 0.2
 out="$(cat "$TMPOUT")"

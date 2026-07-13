@@ -95,7 +95,6 @@ const dock = document.getElementById('dock');
 const dockTabs = document.getElementById('dock-tabs');
 const dockMeta = document.getElementById('dock-meta');
 const dockPanes = document.getElementById('dock-panes');
-dockPanes.style.height = 'auto';
 dock.style.height = (parseInt(localStorage.getItem('margayDockH'), 10) || 220) + 'px';
 
 function keyFor(wt, svc) { return wt + '/' + svc; }
@@ -163,7 +162,7 @@ function openLog(wt, wtName, svc, logPath, url, pid, db) {
 }
 
 function openCmd(wt, wtName, text, err) {
-  const key = keyFor(wt, 'cmd');
+  const key = keyFor(wt, ' cmd');
   const t = tabs.get(key) || { kind:'cmd', title: wtName + ' · command', wt,
                                buf:'', follow:false, err:false, meta:[] };
   t.buf = text; t.err = !!err;
