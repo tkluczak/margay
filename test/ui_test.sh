@@ -173,8 +173,9 @@ assert_eq "403" "$code" "request with rebound Host rejected"
 page="$(curl -s "$BASE/")"
 assert_contains "$page" "<title>margay</title>" "GET / serves the page"
 assert_contains "$page" "/api/state" "page polls /api/state"
-assert_contains "$page" 'id="dock"' "page has the dock"
-assert_contains "$page" 'class="grid"' "page has card grids"
+assert_contains "$page" 'id="sidebar"' "page has the worktree sidebar"
+assert_contains "$page" 'id="detail"' "page has the detail pane"
+assert_contains "$page" 'id="logtabs"' "page has the log tab strip"
 
 # --- proxy: host routing ---
 SLUG="$(python3 -c "import sys; sys.path.insert(0, '$HERE/../lib'); import ui; print(ui.slugify('$(basename "$REPO")'))")"

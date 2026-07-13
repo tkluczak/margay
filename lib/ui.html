@@ -6,62 +6,57 @@
 <title>margay</title>
 <style>
   :root { --fg:#1a1a1a; --muted:#777; --bg:#f6f6f4; --card:#fff; --line:#e2e2de;
-          --accent:#0b6e4f; --danger:#a33; --dockbg:#f0f0ee; }
+          --accent:#0b6e4f; --danger:#a33; --panelbg:#f0f0ee; --sel:#e7efe9; }
   @media (prefers-color-scheme: dark) {
     :root { --fg:#e8e8e6; --muted:#999; --bg:#161615; --card:#1f1f1e;
-            --line:#333; --accent:#4dbd95; --danger:#e07a7a; --dockbg:#101013; }
+            --line:#333; --accent:#4dbd95; --danger:#e07a7a; --panelbg:#101013; --sel:#22302a; }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body { margin:0; display:flex; flex-direction:column; background:var(--bg); color:var(--fg);
          font:14px/1.5 ui-sans-serif, system-ui, sans-serif; }
-  h1 { font-size:1.05rem; margin:0; padding:1rem 1.5rem .4rem; }
+  h1 { font-size:1.05rem; margin:0; padding: .8rem 1.2rem .5rem; }
   h1 small { color:var(--muted); font-weight:normal; }
-  main { flex:1; overflow:auto; padding:0 1.5rem 1rem; }
-  .proj { margin-bottom: 1.2rem; }
-  .proj-h { display:flex; align-items:baseline; gap:.6rem; padding:.4rem 0; border-bottom:1px solid var(--line); }
-  .proj-h b { font-size:.95rem; }
-  .proj-h .path { color:var(--muted); font-family:ui-monospace,monospace; font-size:.75rem;
-                  flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:.7rem; padding:.7rem 0 0; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:8px;
-          padding:.6rem .8rem; display:flex; flex-direction:column; gap:.3rem; }
-  .card.running { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
-  .card.stale { opacity:.55; }
-  .card-t { display:flex; align-items:center; gap:.5rem; }
+  #cols { flex:1; display:flex; min-height:0; border-top:1px solid var(--line); }
+  #sidebar { width:250px; flex:none; overflow-y:auto; border-right:1px solid var(--line); }
+  .proj-h { display:flex; align-items:baseline; gap:.4rem; padding:.55rem .9rem .25rem;
+            font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .proj-h b { color:var(--fg); letter-spacing:0; text-transform:none; font-size:.85rem; }
+  .proj-h .x { margin-left:auto; }
+  .wt-row { display:flex; align-items:center; gap:.5rem; padding:.35rem .9rem; cursor:pointer; }
+  .wt-row:hover { background:var(--panelbg); }
+  .wt-row.sel { background:var(--sel); }
+  .wt-row b { flex:1; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .dot { width:8px; height:8px; border-radius:50%; background:var(--line); flex:none; }
   .dot.on { background:var(--accent); }
-  .card-t b { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .branch { color:var(--muted); font-family:ui-monospace,monospace; font-size:.72rem;
-            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .card a.wturl { color:var(--accent); font-family:ui-monospace,monospace; font-size:.78rem;
-                  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .hint { color:var(--muted); font-family:ui-monospace,monospace; font-size:.75rem; opacity:.7; }
-  .chips { display:flex; gap:.35rem; flex-wrap:wrap; }
-  .chip { border:1px solid var(--line); border-radius:10px; padding:0 .55rem; font-size:.72rem;
-          font-family:ui-monospace,monospace; color:var(--accent); cursor:pointer; background:transparent; }
-  .badge { font-size:.68rem; color:var(--danger); }
+  #detail { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #summary { padding:.9rem 1.2rem; overflow-y:auto; }
+  #summary h2 { margin:0 0 .1rem; font-size:1.05rem; display:flex; align-items:center; gap:.7rem; }
+  .branch { color:var(--muted); font-family:ui-monospace,monospace; font-size:.78rem; }
+  .path { color:var(--muted); font-family:ui-monospace,monospace; font-size:.72rem; user-select:all; }
+  .urls { margin:.7rem 0 .2rem; display:grid; grid-template-columns:max-content 1fr; gap:.15rem .8rem;
+          font-family:ui-monospace,monospace; font-size:.8rem; }
+  .urls .k { color:var(--muted); }
+  .urls a { color:var(--accent); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .urls .hint { color:var(--muted); opacity:.7; }
+  .meta { color:var(--muted); font-family:ui-monospace,monospace; font-size:.74rem; margin-top:.3rem; }
+  .badge { font-size:.7rem; color:var(--danger); }
   button { font:inherit; border:1px solid var(--line); background:transparent;
            color:var(--fg); border-radius:5px; padding:.1rem .55rem; cursor:pointer; }
   button:hover { border-color:var(--accent); }
   button.up { color:var(--accent); } button.down { color:var(--danger); }
+  button.mini { font-size:.72rem; padding:0 .45rem; }
   button.x { border:none; color:var(--muted); }
   .spin { color:var(--muted); font-style:italic; font-size:.8rem; }
   .empty { color:var(--muted); padding:2rem; text-align:center; }
-  #dock { display:none; flex-direction:column; border-top:1px solid var(--line); background:var(--dockbg); }
-  #dock.open { display:flex; }
-  #dock-handle { height:5px; cursor:row-resize; flex:none; }
-  #dock-tabs { display:flex; align-items:center; border-bottom:1px solid var(--line); flex:none; overflow-x:auto; }
+  #divider { height:5px; cursor:row-resize; flex:none; background:transparent; border-top:1px solid var(--line); }
+  #logarea { flex:none; display:flex; flex-direction:column; background:var(--panelbg); min-height:0; }
+  #logtabs { display:flex; align-items:center; border-bottom:1px solid var(--line); flex:none; overflow-x:auto; }
   .dtab { display:flex; align-items:center; gap:.4rem; padding:.25rem .7rem; font-size:.75rem;
           font-family:ui-monospace,monospace; color:var(--muted); border-right:1px solid var(--line);
           cursor:pointer; white-space:nowrap; }
   .dtab.act { color:var(--fg); background:var(--bg); }
-  .dtab .close { color:var(--muted); padding:0 .1rem; }
-  #dock-meta { flex:none; padding:.15rem .8rem; font-size:.72rem; color:var(--muted);
-               font-family:ui-monospace,monospace; border-bottom:1px solid var(--line);
-               display:flex; gap:1rem; align-items:center; }
-  #dock-meta a { color:var(--accent); }
-  #dock-panes { flex:1; overflow:hidden; position:relative; }
+  #logpanes { flex:1; overflow:hidden; position:relative; }
   .pane { position:absolute; inset:0; overflow:auto; margin:0; padding:.5rem .8rem;
           font:0.72rem/1.5 ui-monospace,monospace; white-space:pre-wrap; word-break:break-all;
           display:none; }
@@ -71,12 +66,16 @@
 </head>
 <body>
 <h1>margay <small>— worktree sandboxes</small></h1>
-<main id="app"><div class="empty">loading…</div></main>
-<div id="dock">
-  <div id="dock-handle"></div>
-  <div id="dock-tabs"></div>
-  <div id="dock-meta"></div>
-  <div id="dock-panes"></div>
+<div id="cols">
+  <nav id="sidebar"><div class="empty">loading…</div></nav>
+  <div id="detail">
+    <div id="summary"><div class="empty">select a worktree</div></div>
+    <div id="divider"></div>
+    <div id="logarea">
+      <div id="logtabs"></div>
+      <div id="logpanes"></div>
+    </div>
+  </div>
 </div>
 <script>
 "use strict";
@@ -84,94 +83,122 @@ const esc = s => String(s).replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const jsq = s => esc(String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\u0027").replace(/"/g, '\\u0022'));
 
-const busy = new Set();          // worktreePaths with an in-flight up/down
+const busy = new Set();
 let lastState = {projects: []};
+let selected = localStorage.getItem('margaySelected') || null;
 
-// ---- dock ----------------------------------------------------------------
-// tabs: key -> {kind:'log'|'cmd', title, wt, meta:{url,pid,db}, logPath, offset, buf, follow, err}
-const tabs = new Map();
-let activeKey = null;
-const dock = document.getElementById('dock');
-const dockTabs = document.getElementById('dock-tabs');
-const dockMeta = document.getElementById('dock-meta');
-const dockPanes = document.getElementById('dock-panes');
-dock.style.height = (parseInt(localStorage.getItem('margayDockH'), 10) || 220) + 'px';
+// per-worktree tab state: wtPath -> { tabs: Map(key -> tab), active: key }
+// tab: {kind:'log'|'cmd', title, logPath?, offset, buf, follow, err, meta:[{text,href?}]}
+const wtTabs = new Map();
+function tabsFor(wt) {
+  if (!wtTabs.has(wt)) wtTabs.set(wt, { tabs: new Map(), active: null });
+  return wtTabs.get(wt);
+}
 
-function keyFor(wt, svc) { return wt + '/' + svc; }
+const logarea = document.getElementById('logarea');
+const logtabs = document.getElementById('logtabs');
+const logpanes = document.getElementById('logpanes');
+logarea.style.height = (parseInt(localStorage.getItem('margayLogH'), 10) || 240) + 'px';
 
-function paneFor(key) {
-  let pre = dockPanes.querySelector('pre[data-key="' + CSS.escape(key) + '"]');
+function findWt(path) {
+  for (const p of lastState.projects || [])
+    for (const wt of p.worktrees || [])
+      if (wt.path === path) return { p, wt };
+  return null;
+}
+
+function defaultSelection() {
+  let first = null;
+  for (const p of lastState.projects || [])
+    for (const wt of p.worktrees || []) {
+      first = first || wt.path;
+      if (wt.services.length) return wt.path;
+    }
+  return first;
+}
+
+function selectWt(path) {
+  selected = path;
+  localStorage.setItem('margaySelected', path);
+  render();
+}
+
+// keep the selected worktree's tabs in sync with its running services
+function syncTabs(wt) {
+  const st = tabsFor(wt.path);
+  const wanted = new Set(wt.services.map(s => 'log:' + s.service));
+  for (const key of [...st.tabs.keys()])
+    if (key.startsWith('log:') && !wanted.has(key)) {
+      st.tabs.delete(key);
+      const pre = logpanes.querySelector('pre[data-key="' + CSS.escape(wt.path + '|' + key) + '"]');
+      if (pre) pre.remove();
+    }
+  for (const s of wt.services) {
+    const key = 'log:' + s.service;
+    if (!st.tabs.has(key) && s.log) {
+      st.tabs.set(key, { kind:'log', title: s.service, logPath: s.log,
+                         offset:-1, buf:'', follow:true, err:false,
+                         meta: [ s.url ? {text:s.url, href:s.url} : null,
+                                 {text:'pid ' + s.pid},
+                                 s.dbName ? {text:'db ' + s.dbName} : null ].filter(Boolean) });
+    } else if (st.tabs.has(key)) {
+      const t = st.tabs.get(key);
+      t.meta = [ s.url ? {text:s.url, href:s.url} : null, {text:'pid ' + s.pid},
+                 s.dbName ? {text:'db ' + s.dbName} : null ].filter(Boolean);
+    }
+  }
+  if (!st.active || !st.tabs.has(st.active)) st.active = st.tabs.keys().next().value || null;
+}
+
+function paneFor(wt, key) {
+  const id = wt + '|' + key;
+  let pre = logpanes.querySelector('pre[data-key="' + CSS.escape(id) + '"]');
   if (!pre) {
     pre = document.createElement('pre');
     pre.className = 'pane';
-    pre.dataset.key = key;
-    dockPanes.appendChild(pre);
+    pre.dataset.key = id;
+    logpanes.appendChild(pre);
   }
   return pre;
 }
 
-function renderDock() {
-  dock.classList.toggle('open', tabs.size > 0);
-  dockTabs.innerHTML = '';
-  for (const [key, t] of tabs) {
+function renderTabs() {
+  const st = selected ? tabsFor(selected) : null;
+  logtabs.innerHTML = '';
+  if (!st) return;
+  if (st.active) paneFor(selected, st.active);
+  for (const pre of logpanes.querySelectorAll('.pane'))
+    pre.classList.toggle('act', pre.dataset.key === selected + '|' + (st.active || ''));
+  for (const [key, t] of st.tabs) {
     const el = document.createElement('span');
-    el.className = 'dtab' + (key === activeKey ? ' act' : '');
+    el.className = 'dtab' + (key === st.active ? ' act' : '');
     el.innerHTML = esc(t.title) +
-      ' <span class="close" title="close">✕</span>' +
+      (t.kind === 'cmd' ? ' <span class="close" title="close">✕</span>' : '') +
       (t.kind === 'log'
         ? ' <label style="font-size:.68rem"><input type="checkbox" ' + (t.follow ? 'checked' : '') + '> follow</label>'
         : '');
     el.addEventListener('click', e => {
-      if (e.target.classList.contains('close')) { closeTab(key); return; }
+      if (e.target.classList && e.target.classList.contains('close')) {
+        st.tabs.delete(key);
+        const pre = logpanes.querySelector('pre[data-key="' + CSS.escape(selected + '|' + key) + '"]');
+        if (pre) pre.remove();
+        if (st.active === key) st.active = st.tabs.keys().next().value || null;
+        renderTabs(); return;
+      }
       if (e.target.type === 'checkbox') { t.follow = e.target.checked; return; }
-      focusTab(key);
+      st.active = key; renderTabs();
     });
-    dockTabs.appendChild(el);
+    logtabs.appendChild(el);
   }
-  const t = tabs.get(activeKey);
-  if (t) paneFor(activeKey);   // ensure the pane exists before the visibility pass
-  for (const pre of dockPanes.querySelectorAll('.pane')) {
-    pre.classList.toggle('act', pre.dataset.key === activeKey);
-  }
-  dockMeta.innerHTML = !t ? '' : (t.meta || []).map(m =>
-    m.href ? '<a href="' + esc(m.href) + '" target="_blank" rel="noopener">' + esc(m.text) + '</a>'
-           : '<span>' + esc(m.text) + '</span>').join('');
-  const pre = t && paneFor(activeKey);
+  const t = st.tabs.get(st.active);
+  const pre = t && paneFor(selected, st.active);
   if (pre && t) { pre.textContent = t.buf; pre.classList.toggle('err', !!t.err); if (t.follow) pre.scrollTop = pre.scrollHeight; }
 }
 
-function focusTab(key) { activeKey = key; renderDock(); }
-
-function closeTab(key) {
-  tabs.delete(key);
-  const pre = dockPanes.querySelector('pre[data-key="' + CSS.escape(key) + '"]');
-  if (pre) pre.remove();
-  if (activeKey === key) activeKey = tabs.size ? [...tabs.keys()].pop() : null;
-  renderDock();
-}
-
-function openLog(wt, wtName, svc, logPath, url, pid, db) {
-  const key = keyFor(wt, svc);
-  if (!tabs.has(key)) {
-    tabs.set(key, { kind:'log', title: wtName + ' · ' + svc, wt, logPath,
-                    offset:-1, buf:'', follow:true, err:false,
-                    meta:[ url ? {text:url, href:url} : null,
-                           {text:'pid ' + pid}, db ? {text:'db ' + db} : null ].filter(Boolean) });
-  }
-  focusTab(key);
-}
-
-function openCmd(wt, wtName, text, err) {
-  const key = keyFor(wt, ' cmd');
-  const t = tabs.get(key) || { kind:'cmd', title: wtName + ' · command', wt,
-                               buf:'', follow:false, err:false, meta:[] };
-  t.buf = text; t.err = !!err;
-  tabs.set(key, t);
-  focusTab(key);
-}
-
 async function pollLogs() {
-  for (const [key, t] of tabs) {
+  if (!selected) return;
+  const st = tabsFor(selected);
+  for (const [key, t] of st.tabs) {
     if (t.kind !== 'log') continue;
     try {
       const r = await fetch('/api/log?file=' + encodeURIComponent(t.logPath) + '&offset=' + t.offset);
@@ -180,33 +207,32 @@ async function pollLogs() {
       if (data.offset < t.offset) t.buf = data.data; else t.buf += data.data;
       if (t.buf.length > 262144) t.buf = t.buf.slice(-262144);
       t.offset = data.offset;
-      const pre = paneFor(key);
+      const pre = paneFor(selected, key);
       if (data.data || pre.textContent === '') {
         const stick = t.follow;
         pre.textContent = t.buf;
-        if (stick) pre.scrollTop = pre.scrollHeight;
+        if (stick && key === st.active) pre.scrollTop = pre.scrollHeight;
       }
     } catch (e) { /* next tick */ }
   }
 }
 
-// dock resize
+// divider resize
 (() => {
-  const handle = document.getElementById('dock-handle');
+  const divider = document.getElementById('divider');
   let drag = null;
-  handle.addEventListener('mousedown', e => { drag = { y: e.clientY, h: dock.offsetHeight }; e.preventDefault(); });
+  divider.addEventListener('mousedown', e => { drag = { y: e.clientY, h: logarea.offsetHeight }; e.preventDefault(); });
   window.addEventListener('mousemove', e => {
     if (!drag) return;
-    const h = Math.min(window.innerHeight * 0.7, Math.max(90, drag.h + (drag.y - e.clientY)));
-    dock.style.height = h + 'px';
+    const h = Math.min(window.innerHeight * 0.8, Math.max(80, drag.h + (drag.y - e.clientY)));
+    logarea.style.height = h + 'px';
   });
   window.addEventListener('mouseup', () => {
-    if (drag) localStorage.setItem('margayDockH', String(dock.offsetHeight));
+    if (drag) localStorage.setItem('margayLogH', String(logarea.offsetHeight));
     drag = null;
   });
 })();
 
-// ---- cards ----------------------------------------------------------------
 async function api(path, body) {
   const opts = body === undefined ? {} :
     { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) };
@@ -224,14 +250,23 @@ async function refresh() {
   } catch (e) { /* server gone; keep last view */ }
 }
 
-async function act(cmd, wt, wtName) {
+function openCmd(wt, text, err) {
+  const st = tabsFor(wt);
+  const t = st.tabs.get('cmd') || { kind:'cmd', title:'command', buf:'', follow:false, err:false, meta:[] };
+  t.buf = text; t.err = !!err;
+  st.tabs.set('cmd', t);
+  st.active = 'cmd';
+  if (selected !== wt) selectWt(wt); else renderTabs();
+}
+
+async function act(cmd, wt) {
   busy.add(wt); render();
-  openCmd(wt, wtName, '… running margay ' + cmd, false);
+  openCmd(wt, '… running margay ' + cmd, false);
   try {
     const { data } = await api('/api/' + cmd, { worktreePath: wt });
-    openCmd(wt, wtName, data.output || '(no output)', !data.ok);
+    openCmd(wt, data.output || '(no output)', !data.ok);
   } catch (e) {
-    openCmd(wt, wtName, 'request failed: ' + e, true);
+    openCmd(wt, 'request failed: ' + e, true);
   } finally {
     busy.delete(wt);
   }
@@ -243,46 +278,59 @@ async function unregister(p) {
   await refresh();
 }
 
-function cardHtml(wt) {
-  const running = wt.services.length > 0;
-  const isBusy = busy.has(wt.path);
-  const title = wt.isPrimary ? 'primary' : wt.name;
-  const link = running && wt.url
-    ? '<a class="wturl" href="' + esc(wt.url) + '" target="_blank" rel="noopener">' + esc(wt.url) + '</a>'
-    : (wt.hintUrl ? '<span class="hint">' + esc(wt.hintUrl) + '</span>' : '');
-  return '<div class="card' + (running ? ' running' : '') + '" title="' + esc(wt.path) + '">' +
-    '<div class="card-t"><span class="dot' + (running ? ' on' : '') + '"></span>' +
-    '<b>' + esc(title) + '</b>' +
-    (isBusy ? '<span class="spin">working…</span>'
-      : running
-        ? '<button class="down" onclick="act(\'down\',\'' + jsq(wt.path) + '\',\'' + jsq(title) + '\')">down</button>'
-        : '<button class="up" onclick="act(\'up\',\'' + jsq(wt.path) + '\',\'' + jsq(title) + '\')">up</button>') +
-    '</div>' +
-    '<div class="branch">' + esc(wt.branch) + '</div>' + link +
-    (wt.collision ? '<span class="badge">slug collision — port links only</span>' : '') +
-    (running ? '<div class="chips">' + wt.services.map(s =>
-      '<button class="chip" ' + (s.log
-        ? 'onclick="openLog(\'' + jsq(wt.path) + '\',\'' + jsq(title) + '\',\'' + jsq(s.service) + '\',\'' +
-          jsq(s.log) + '\',\'' + jsq(s.url || '') + '\',\'' + jsq(s.pid) + '\',\'' + jsq(s.dbName || '') + '\')"'
-        : 'disabled') + '>' +
-      esc(s.service) + (s.dbName ? ' · db' : '') + '</button>').join('') + '</div>' : '') +
-    '</div>';
+function actButton(wt, mini) {
+  if (busy.has(wt.path)) return '<span class="spin">working…</span>';
+  const cls = (wt.services.length ? 'down' : 'up') + (mini ? ' mini' : '');
+  const cmd = wt.services.length ? 'down' : 'up';
+  return '<button class="' + cls + '" onclick="event.stopPropagation(); act(\'' + cmd + '\',\'' + jsq(wt.path) + '\')">' + cmd + '</button>';
+}
+
+function renderSidebar() {
+  const el = document.getElementById('sidebar');
+  const ps = lastState.projects || [];
+  if (!ps.length) {
+    el.innerHTML = '<div class="empty">no projects yet — run <code>margay up</code> in a repo</div>';
+    return;
+  }
+  el.innerHTML = ps.map(p => '<div class="proj-h" title="' + esc(p.primaryPath) + '"><b>' + esc(p.project) + '</b>' +
+      (p.exists ? '' : ' <span class="badge">missing</span>') +
+      '<button class="x" title="remove from this list (re-appears on next up)" ' +
+      'onclick="unregister(\'' + jsq(p.primaryPath) + '\')">✕</button></div>' +
+    (p.exists ? p.worktrees.map(wt =>
+      '<div class="wt-row' + (wt.path === selected ? ' sel' : '') + '" onclick="selectWt(\'' + jsq(wt.path) + '\')">' +
+      '<span class="dot' + (wt.services.length ? ' on' : '') + '"></span>' +
+      '<b>' + esc(wt.isPrimary ? 'primary' : wt.name) + '</b>' +
+      actButton(wt, true) + '</div>').join('') : '')).join('');
+}
+
+function renderSummary() {
+  const el = document.getElementById('summary');
+  const hit = selected && findWt(selected);
+  if (!hit) { el.innerHTML = '<div class="empty">select a worktree</div>'; return; }
+  const { wt } = hit;
+  const rows = [];
+  if (wt.url) rows.push(['root', '<a href="' + esc(wt.url) + '" target="_blank" rel="noopener">' + esc(wt.url) + '</a>']);
+  else if (wt.hintUrl) rows.push(['root', '<span class="hint">' + esc(wt.hintUrl) + ' (not running)</span>']);
+  for (const s of wt.services)
+    rows.push([esc(s.service), '<a href="' + esc(s.url) + '" target="_blank" rel="noopener">' + esc(s.url) + '</a>']);
+  const meta = wt.services.map(s =>
+    esc(s.service) + ': pid ' + esc(s.pid) + (s.dbName ? ' · db ' + esc(s.dbName) : '')).join('  ·  ');
+  el.innerHTML =
+    '<h2>' + esc(wt.isPrimary ? 'primary' : wt.name) + ' ' + actButton(wt, false) + '</h2>' +
+    '<div class="branch">' + esc(wt.branch) + '</div>' +
+    '<div class="path">' + esc(wt.path) + '</div>' +
+    (wt.collision ? '<div class="badge">slug collision — port links only</div>' : '') +
+    (rows.length ? '<div class="urls">' + rows.map(r => '<span class="k">' + r[0] + '</span><span>' + r[1] + '</span>').join('') + '</div>' : '') +
+    (meta ? '<div class="meta">' + meta + '</div>' : '');
 }
 
 function render() {
-  const app = document.getElementById('app');
-  const ps = lastState.projects || [];
-  if (!ps.length) {
-    app.innerHTML = '<div class="empty">no projects yet — run <code>margay up</code> in a repo and it appears here</div>';
-    return;
-  }
-  app.innerHTML = ps.map(p => '<div class="proj' + (p.exists ? '' : ' stale') + '">' +
-    '<div class="proj-h"><b>' + esc(p.project) + '</b>' +
-    '<span class="path">' + esc(p.primaryPath) + (p.exists ? '' : ' (missing)') + '</span>' +
-    '<button class="x" title="remove from this list (re-appears on next up)" ' +
-    'onclick="unregister(\'' + jsq(p.primaryPath) + '\')">✕</button></div>' +
-    (p.exists ? '<div class="grid">' + p.worktrees.map(cardHtml).join('') + '</div>' : '') +
-    '</div>').join('');
+  if (!selected || !findWt(selected)) selected = defaultSelection();
+  renderSidebar();
+  renderSummary();
+  const hit = selected && findWt(selected);
+  if (hit) syncTabs(hit.wt);
+  renderTabs();
 }
 
 refresh();
