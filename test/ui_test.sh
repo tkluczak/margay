@@ -17,7 +17,7 @@ PRIMARY="$(cd "$(mktemp -d)" && pwd -P)"
 ( cd "$PRIMARY" && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init )
 REPOBASE="$(cd "$(mktemp -d)" && pwd -P)"
 REPO="$REPOBASE/wt"
-( cd "$PRIMARY" && git worktree add -b test "$REPO" main 2>/dev/null || mkdir -p "$REPO" )
+( cd "$PRIMARY" && git worktree add -q "$REPO" -b test )
 cat > "$MARGAY_HOME/projects.json" <<EOF
 [{"project":"fake","primaryPath":"$PRIMARY","lastUp":"2026-07-13T00:00:00Z"},
  {"project":"gone","primaryPath":"/nonexistent/margay-test","lastUp":"2026-07-01T00:00:00Z"}]
