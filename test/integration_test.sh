@@ -181,6 +181,11 @@ assert_contains "$(cat "$REPO4/hook.out" 2>/dev/null)" "root=hookproj.localhost 
 assert_contains "$(cat "$REPO4/hook.out" 2>/dev/null)" "root=my-wt.hookproj.localhost svc=api.my-wt.hookproj.localhost"   "on_up: worktree hook host is the dash-slugged basename"
 ( cd "$REPO4" && "$MARGAY" down feat-hook >/dev/null 2>&1 )
 
+( cd "$REPO4" && MARGAY_DOMAIN=devel.test "$MARGAY" up >/dev/null 2>&1 )
+assert_contains "$(cat "$REPO4/hook.out" 2>/dev/null)" "root=hookproj.devel.test svc=api.hookproj.devel.test" \
+  "on_up: MARGAY_DOMAIN changes the hook host suffix"
+( cd "$REPO4" && "$MARGAY" down >/dev/null 2>&1 )
+
 cat > "$REPO4/.margay.conf" <<EOF
 project="hookproj"
 services="api"

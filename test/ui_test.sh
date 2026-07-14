@@ -289,7 +289,11 @@ PYEOF
 )"
 assert_contains "$r" "ECHO:PAYLOAD-BYTES" "proxy: websocket handshake and bytes splice both ways"
 kill $WS_UP_PID 2>/dev/null
-trap 'kill ${UI_PID:-} ${UPSTREAM_PID:-} ${UPSTREAM2_PID:-} ${WS_UP_PID:-} ${BUSY_PID:-} ${FB_PID:-} ${WILD_PID:-} ${V6_PID:-} 2>/dev/null' EXIT
+# drop the ws fixture row — its pid is this script, so it would stay "live" and
+# give the worktree a second leaf (killing later unique-root assertions)
+jq '[.[] | select(.service != "ws")]' "$MARGAY_HOME/registry.json" > "$MARGAY_HOME/registry.json.tmp" \
+  && mv "$MARGAY_HOME/registry.json.tmp" "$MARGAY_HOME/registry.json"
+trap 'kill ${UI_PID:-} ${UPSTREAM_PID:-} ${UPSTREAM2_PID:-} ${WS_UP_PID:-} ${BUSY_PID:-} ${FB_PID:-} ${WILD_PID:-} ${V6_PID:-} ${DOM_PID:-} 2>/dev/null' EXIT
 
 # --- proxy: bind fallback ---
 BUSY=$(( (RANDOM % 2000) + 27000 ))
@@ -326,6 +330,33 @@ r="$(curl -s -H "Host: web.$SLUG.fake.localhost" "http://127.0.0.1:$WILDPORT/wil
 assert_contains "$r" "upstream says hi from /wild" "wildcard bind: proxy routes via loopback"
 assert_contains "$(cat "$WILD_LOG")" "wildcard bind, loopback-only" "wildcard bind: startup line says so"
 kill $WILD_PID 2>/dev/null
+
+# --- custom domain / exposed mode (--domain, ui v5) ---
+DOMPORT=$(( (RANDOM % 2000) + 33000 ))
+DOM_LOG="$MARGAY_HOME/domain-ui.log"
+MARGAY_BIN="$MOCK" python3 "$HERE/../lib/ui.py" --port $((PORT+3)) --proxy-port "$DOMPORT" \
+  --domain devel.test --no-browser > "$DOM_LOG" 2>&1 &
+DOM_PID=$!
+for _ in $(seq 1 25); do curl -sf "http://127.0.0.1:$((PORT+3))/api/state" >/dev/null 2>&1 && break; sleep 0.2; done
+dst="$(curl -s "http://127.0.0.1:$((PORT+3))/api/state")"
+DREPO_WT="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$dst")"
+assert_eq "http://$SLUG.fake.devel.test:$DOMPORT/" "$(jq -r '.url' <<<"$DREPO_WT")" \
+  "domain: worktree root url carries the custom domain"
+assert_eq "http://web.$SLUG.fake.devel.test:$DOMPORT/" \
+  "$(jq -r '.services[] | select(.service=="web") | .url' <<<"$DREPO_WT")" \
+  "domain: service url carries the custom domain"
+r="$(curl -s -H "Host: api.$SLUG.fake.devel.test" "http://127.0.0.1:$DOMPORT/dom")"
+assert_contains "$r" "upstream says hi from /dom" "domain: proxy routes custom-domain hosts"
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: devel.test:$((PORT+3))" "http://127.0.0.1:$((PORT+3))/api/state")"
+assert_eq "200" "$code" "domain: control api accepts the declared domain host"
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.example:$((PORT+3))" "http://127.0.0.1:$((PORT+3))/api/state")"
+assert_eq "403" "$code" "domain: control api still rejects unknown hosts"
+assert_contains "$(cat "$DOM_LOG")" "devel.test" "domain: startup line names the domain"
+kill $DOM_PID 2>/dev/null
+
+# also: default mode must still reject the same foreign Host header
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: devel.test:$PORT" "$BASE/api/state")"
+assert_eq "403" "$code" "default mode: custom-domain host rejected without --domain"
 
 # --- proxy: upstream listening on IPv6 loopback only (vite does this) ---
 V6PORT=$(( (RANDOM % 2000) + 31000 ))
@@ -373,6 +404,13 @@ import ui
 
 assert ui.slugify("Feature/Analytics BC") == "feature-analytics-bc", ui.slugify("Feature/Analytics BC")
 assert ui.slugify("wt_a..b") == "wt-a-b", ui.slugify("wt_a..b")
+
+# exposed-mode peer guard: loopback-only by default, open with a custom domain
+assert ui.peer_ok("127.0.0.1") and ui.peer_ok("::1"), "loopback always ok"
+assert not ui.peer_ok("10.0.0.5"), "remote peer refused in localhost mode"
+ui.DOMAIN["name"] = "devel.test"
+assert ui.peer_ok("10.0.0.5"), "remote peer allowed in domain mode"
+ui.DOMAIN["name"] = "localhost"
 
 home = os.environ["MARGAY_HOME"]
 wt = "/tmp/routes-wt"; pr = "/tmp/routes-primary"
