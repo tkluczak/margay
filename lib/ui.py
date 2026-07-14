@@ -136,6 +136,33 @@ def build_routes():
     return routes, info
 
 
+CONF_CACHE = {}   # primaryPath -> (conf mtime, parsed conf-json or None)
+
+
+def conf_meta(primary):
+    """Dependency metadata from `margay conf-json`, cached by conf mtime."""
+    conf = os.path.join(primary, ".margay.conf")
+    try:
+        mtime = os.path.getmtime(conf)
+    except OSError:
+        return None
+    hit = CONF_CACHE.get(primary)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    data = None
+    try:
+        proc = subprocess.run([MARGAY_BIN, "conf-json"], cwd=primary,
+                              capture_output=True, text=True, timeout=10)
+        if proc.returncode == 0:
+            data = json.loads(proc.stdout)
+        if not isinstance(data, dict):
+            data = None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        data = None
+    CONF_CACHE[primary] = (mtime, data)
+    return data
+
+
 def state():
     live = [r for r in read_json(REGISTRY) if pid_alive(r.get("pid"))]
     _, wt_info = build_routes()
@@ -170,8 +197,34 @@ def state():
                             "url": host_url(info["host"]) if proxy_up and info.get("host") else None,
                             "hintUrl": host_url(base) if proxy_up else None,
                             "collision": bool(info.get("collision"))})
-        projects.append({**p, "exists": exists, "worktrees": wts})
+        projects.append({**p, "exists": exists, "worktrees": wts,
+                         "conf": conf_meta(primary) if exists else None})
     return {"projects": projects}
+
+
+def pair_options(primary, service):
+    """Live pairing candidates for `service` of the project registered at
+    `primary`, per its conf dependency (needs > uses_project)."""
+    none = {"dep": None, "optional": False, "mainPort": None, "candidates": []}
+    meta = conf_meta(primary) or {}
+    svc = next((s for s in meta.get("services", [])
+                if isinstance(s, dict) and s.get("name") == service), None)
+    if not svc:
+        return none
+    if svc.get("needs"):
+        dep_proj, dep_svc = meta.get("project"), svc["needs"]
+    elif svc.get("usesProject"):
+        dep_proj, dep_svc = svc["usesProject"].split(":", 1)
+    else:
+        return none
+    cands = [{"project": r.get("project"), "service": r.get("service"),
+              "branch": r.get("branch"), "port": r.get("port"),
+              "worktree": os.path.basename(r.get("worktreePath") or "")}
+             for r in read_json(REGISTRY)
+             if pid_alive(r.get("pid"))
+             and r.get("project") == dep_proj and r.get("service") == dep_svc]
+    return {"dep": dep_svc, "optional": bool(svc.get("usesOptional")),
+            "mainPort": svc.get("mainPort"), "candidates": cands}
 
 
 def log_slice(file_param, offset):
@@ -235,6 +288,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif url.path == "/api/state":
             self.send_json(state())
+        elif url.path == "/api/pair-options":
+            q = parse_qs(url.query)
+            self.send_json(pair_options(q.get("primary", [""])[0],
+                                        q.get("service", [""])[0]))
         elif url.path == "/api/log":
             q = parse_qs(url.query)
             try:
@@ -267,7 +324,25 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(wt, str) or not os.path.isdir(wt):
                 self.send_json({"ok": False, "output": "no such worktree: %s" % wt}, 400)
                 return
-            self.run_margay([url.path.rsplit("/", 1)[1]], cwd=wt)
+            argv = [url.path.rsplit("/", 1)[1]]
+            if url.path == "/api/up":
+                svc = body.get("service")
+                if svc is not None:
+                    if not (isinstance(svc, str) and re.fullmatch(r"[A-Za-z0-9_-]+", svc)):
+                        self.send_json({"ok": False, "output": "bad service name"}, 400)
+                        return
+                    argv.append(svc)
+                use = body.get("use")
+                if use is not None:
+                    name = use.get("name") if isinstance(use, dict) else None
+                    value = use.get("value") if isinstance(use, dict) else None
+                    if not (isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_-]+", name)
+                            and isinstance(value, str)
+                            and re.fullmatch(r"[0-9]+|none", value)):
+                        self.send_json({"ok": False, "output": "bad use pairing"}, 400)
+                        return
+                    argv += ["--use", "%s=%s" % (name, value)]
+            self.run_margay(argv, cwd=wt)
         elif url.path == "/api/unregister":
             path = body.get("primaryPath", "")
             if not isinstance(path, str) or not path:

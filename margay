@@ -54,7 +54,7 @@ margay::prepare_db() {   # service fresh empty → echoes db name ('' if none); 
 }
 
 margay::launch() {   # service fresh empty use-overrides
-  local svc="$1" port db log pid uses="" dep depproj="" depsvc="" o out dep_port="" dep_url=""
+  local svc="$1" port db log pid uses="" dep depproj="" depsvc="" o out dep_port="" dep_url="" optional main
   port="$(margay::alloc_port "$svc")" \
     || die "no free port for '$svc' in $(margay::svc_var "$svc" ports)"
   db="$(margay::prepare_db "$svc" "$2" "$3")" \
@@ -68,17 +68,32 @@ margay::launch() {   # service fresh empty use-overrides
   fi
   if [[ -n "$depsvc" ]]; then
     o="$(margay::use_override "$4" "$depsvc")"
-    out="$(margay::resolve_dep "$depproj" "$depsvc" "$WORKTREE" "$o" "$(margay::svc_var "$svc" main_port)")" \
-      || die "cannot resolve '$depsvc' for '$svc' — start it first or pass --use $depsvc=<port|url>"
-    read -r dep_port dep_url <<<"$out"
-    uses="$dep_url"
-    echo "  $depsvc → $dep_url"
+    optional="$(margay::svc_var "$svc" uses_optional)"
+    if [[ "$o" == none ]]; then
+      [[ "$optional" == 1 ]] \
+        || die "--use $depsvc=none requires service_${svc}_uses_optional=1"
+      echo "  $depsvc → none (optional)"
+    else
+      # optional services never fall back to main_port silently — a missing
+      # dependency means "run without one" (the start hook decides what that
+      # means, e.g. mock mode); main_port stays an explicit --use choice.
+      main=""; [[ "$optional" == 1 ]] || main="$(margay::svc_var "$svc" main_port)"
+      if out="$(margay::resolve_dep "$depproj" "$depsvc" "$WORKTREE" "$o" "$main")"; then
+        read -r dep_port dep_url <<<"$out"
+        uses="$dep_url"
+        echo "  $depsvc → $dep_url"
+      elif [[ "$optional" == 1 && -z "$o" ]]; then
+        echo "  $depsvc → none (optional)"
+      else
+        die "cannot resolve '$depsvc' for '$svc' — start it first or pass --use $depsvc=<port|url>"
+      fi
+    fi
   fi
   log="$(margay::log_path "$project" "$svc" "$BRANCH")"
   ( cd "$WORKTREE"
     export PORT="$port"
     if [[ -n "$db" ]]; then export DB_NAME="$db" DB_URL="$(margay::url_for_db "$db")"; fi
-    if [[ -n "$depsvc" ]]; then
+    if [[ -n "$depsvc" && -n "$dep_url" ]]; then
       U="$(margay::env_name "$depsvc")"
       eval "export ${U}_PORT=\"\$dep_port\" ${U}_URL=\"\$dep_url\""
     fi
@@ -94,7 +109,7 @@ margay::cmd_up() {
   rows="$(git worktree list --porcelain | margay::worktrees_parse)"
   while (($#)); do case "$1" in
     --fresh) fresh=1 ;; --empty) empty=1 ;;
-    --use) shift; [[ $# -ge 1 && "$1" == *=* ]] || die "--use needs NAME=PORT|URL"; use="$use $1" ;;
+    --use) shift; [[ $# -ge 1 && "$1" == *=* ]] || die "--use needs NAME=PORT|URL|none"; use="$use $1" ;;
     -*) die "unknown flag: $1" ;;
     *)
       if [[ " $services " == *" $1 "* ]]; then
@@ -236,6 +251,29 @@ margay::cmd_unregister() {
   echo "unregistered: $q   (it re-appears on the next 'margay up' there)"
 }
 
+# One-line JSON dump of the loaded conf's dependency-relevant fields.
+# Consumed by lib/ui.py (tree grouping, pair-options); not user-facing.
+margay::cmd_conf_json() {
+  margay::context
+  local s items="[]"
+  for s in $services; do
+    items="$(jq -c --argjson items "$items" -n \
+      --arg name "$s" \
+      --arg ports "$(margay::svc_var "$s" ports)" \
+      --arg needs "$(margay::svc_var "$s" needs)" \
+      --arg up "$(margay::svc_var "$s" uses_project)" \
+      --arg uo "$(margay::svc_var "$s" uses_optional)" \
+      --arg mp "$(margay::svc_var "$s" main_port)" \
+      '$items + [{name:$name, ports:$ports,
+        needs:(if $needs=="" then null else $needs end),
+        usesProject:(if $up=="" then null else $up end),
+        usesOptional:($uo=="1"),
+        mainPort:(if $mp=="" then null else ($mp|tonumber) end)}]')"
+  done
+  jq -c -n --arg project "$project" --argjson services "$items" \
+    '{project:$project, services:$services}'
+}
+
 margay::cmd_ui() {
   command -v python3 >/dev/null 2>&1 \
     || die "python3 not found — 'margay ui' needs Python 3 (the rest of margay does not)"
@@ -250,9 +288,10 @@ main() {
     status)   margay::cmd_status ;;
     worktrees) margay::cmd_worktrees ;;
     unregister) margay::cmd_unregister "$@" ;;
+    conf-json) margay::cmd_conf_json ;;
     ui)       margay::cmd_ui "$@" ;;
-    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" ;;
-    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" >&2
+    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" ;;
+    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" >&2
               echo "margay: unknown subcommand: $cmd" >&2
               exit 1 ;;
   esac

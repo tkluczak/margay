@@ -22,8 +22,13 @@
   .proj-h { display:flex; align-items:baseline; gap:.4rem; padding:.55rem .9rem .25rem;
             font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
   .proj-h b { color:var(--fg); letter-spacing:0; text-transform:none; font-size:.85rem; }
-  .proj-h .x { margin-left:auto; }
-  .wt-row { display:flex; align-items:center; gap:.5rem; padding:.35rem .9rem; cursor:pointer; }
+  .svc-h { display:flex; align-items:center; gap:.4rem; padding:.35rem .9rem .1rem 1.1rem;
+           font-size:.74rem; font-family:ui-monospace,monospace; color:var(--muted); }
+  .svc-h .x { margin-left:auto; }
+  .wt-row { display:flex; align-items:center; gap:.5rem; padding:.35rem .9rem .35rem 1.6rem; cursor:pointer; }
+  .pair { color:var(--muted); font-weight:normal; font-family:ui-monospace,monospace; font-size:.68rem; }
+  .pickrows { display:flex; flex-direction:column; gap:.4rem; margin:.8rem 0; max-width:26rem; }
+  .pickrows button { text-align:left; padding:.35rem .7rem; font-family:ui-monospace,monospace; }
   .wt-row:hover { background:var(--panelbg); }
   .wt-row.sel { background:var(--sel); }
   .wt-row b { flex:1; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -50,7 +55,7 @@
   .spin { color:var(--muted); font-style:italic; font-size:.8rem; }
   .empty { color:var(--muted); padding:2rem; text-align:center; }
   #divider { height:5px; cursor:row-resize; flex:none; background:transparent; border-top:1px solid var(--line); }
-  #logarea { flex:none; display:flex; flex-direction:column; background:var(--panelbg); min-height:0; }
+  #logarea { flex:1; display:flex; flex-direction:column; background:var(--panelbg); min-height:0; }
   #logtabs { display:flex; align-items:center; border-bottom:1px solid var(--line); flex:none; overflow-x:auto; }
   .dtab { display:flex; align-items:center; gap:.4rem; padding:.25rem .7rem; font-size:.75rem;
           font-family:ui-monospace,monospace; color:var(--muted); border-right:1px solid var(--line);
@@ -98,7 +103,9 @@ function tabsFor(wt) {
 const logarea = document.getElementById('logarea');
 const logtabs = document.getElementById('logtabs');
 const logpanes = document.getElementById('logpanes');
-logarea.style.height = (parseInt(localStorage.getItem('margayLogH'), 10) || 240) + 'px';
+// default: logarea flex-fills the window; an explicit height exists only after a drag
+const storedLogH = parseInt(localStorage.getItem('margayLogH'), 10);
+if (storedLogH) { logarea.style.flex = 'none'; logarea.style.height = storedLogH + 'px'; }
 
 function findWt(path) {
   for (const p of lastState.projects || [])
@@ -224,6 +231,7 @@ async function pollLogs() {
   window.addEventListener('mousemove', e => {
     if (!drag) return;
     const h = Math.min(window.innerHeight * 0.8, Math.max(80, drag.h + (drag.y - e.clientY)));
+    logarea.style.flex = 'none';
     logarea.style.height = h + 'px';
   });
   window.addEventListener('mouseup', () => {
@@ -258,11 +266,11 @@ function openCmd(wt, text, err) {
   if (selected !== wt) selectWt(wt); else renderTabs();
 }
 
-async function act(cmd, wt) {
+async function act(cmd, wt, extra) {
   busy.add(wt); render();
-  openCmd(wt, '… running margay ' + cmd, false);
+  openCmd(wt, '… running margay ' + cmd + (extra && extra.service ? ' ' + extra.service : ''), false);
   try {
-    const { data } = await api('/api/' + cmd, { worktreePath: wt });
+    const { data } = await api('/api/' + cmd, Object.assign({ worktreePath: wt }, extra || {}));
     openCmd(wt, data.output || '(no output)', !data.ok);
   } catch (e) {
     openCmd(wt, 'request failed: ' + e, true);
@@ -270,6 +278,56 @@ async function act(cmd, wt) {
     busy.delete(wt);
   }
   await refresh();
+}
+
+// --- dependency pairing (ui v4) ---
+// pendingPick = {wt, svc, po, cands} while the picker awaits a choice
+let pendingPick = null;
+
+function regByPrimary(primary) {
+  return (lastState.projects || []).find(p => p.primaryPath === primary) || null;
+}
+
+async function actUp(wtPath, svcName, primary) {
+  const reg = regByPrimary(primary);
+  const sv = reg && reg.conf ? (reg.conf.services || []).find(s => s.name === svcName) : null;
+  if (!sv || !(sv.needs || sv.usesProject)) return act('up', wtPath, { service: svcName });
+  let po = null;
+  try {
+    po = (await api('/api/pair-options?primary=' + encodeURIComponent(primary) +
+                    '&service=' + encodeURIComponent(svcName))).data;
+  } catch (e) { /* fall through to plain up */ }
+  if (!po || !po.dep) return act('up', wtPath, { service: svcName });
+  const cands = po.candidates || [];
+  if (cands.length === 1)
+    return act('up', wtPath, { service: svcName, use: { name: po.dep, value: String(cands[0].port) } });
+  if (!cands.length && !po.optional)
+    return act('up', wtPath, { service: svcName });   // engine reports "start it first"
+  pendingPick = { wt: wtPath, svc: svcName, po, cands };
+  selectWt(wtPath);
+}
+
+function pickPair(value) {
+  const pp = pendingPick; pendingPick = null;
+  act('up', pp.wt, { service: pp.svc, use: { name: pp.po.dep, value } });
+}
+
+function cancelPick() { pendingPick = null; render(); }
+
+function renderPicker(el, wt) {
+  const { svc, po, cands } = pendingPick;
+  const rows = cands.map(c =>
+    '<button onclick="pickPair(\'' + jsq(String(c.port)) + '\')">' +
+    esc(c.worktree) + ' · :' + esc(c.port) + '</button>');
+  if (po.optional)
+    rows.push('<button onclick="pickPair(\'none\')">mock mode — no ' + esc(po.dep) + '</button>');
+  if (!cands.length && po.mainPort)
+    rows.push('<button onclick="pickPair(\'' + jsq(String(po.mainPort)) + '\')">main (:' + esc(po.mainPort) + ')</button>');
+  el.innerHTML =
+    '<h2>' + esc(wt.isPrimary ? 'primary' : wt.name) + '</h2>' +
+    '<div class="branch">pair <b>' + esc(svc) + '</b> with which <b>' + esc(po.dep) + '</b>?</div>' +
+    '<div class="pickrows">' + rows.join('') + '</div>' +
+    '<button onclick="cancelPick()">cancel</button>';
 }
 
 async function unregister(p) {
@@ -284,6 +342,18 @@ function actButton(wt, mini) {
   return '<button class="' + cls + '" onclick="event.stopPropagation(); act(\'' + cmd + '\',\'' + jsq(wt.path) + '\')">' + cmd + '</button>';
 }
 
+function svcButton(wt, sv, reg) {
+  if (busy.has(wt.path)) return '<span class="spin">working…</span>';
+  if (wt.services.some(s => s.service === sv.name))
+    return '<button class="down mini" onclick="event.stopPropagation(); act(\'down\',\'' + jsq(wt.path) + '\')">down</button>';
+  return '<button class="up mini" onclick="event.stopPropagation(); actUp(\'' + jsq(wt.path) +
+         '\',\'' + jsq(sv.name) + '\',\'' + jsq(reg.primaryPath) + '\')">up</button>';
+}
+
+const basename = p => String(p || '').replace(/\/+$/, '').split('/').pop();
+
+// sidebar tree: project → service (one node per declared service of each
+// registered repo; registrations merge under their project name) → worktree
 function renderSidebar() {
   const el = document.getElementById('sidebar');
   const ps = lastState.projects || [];
@@ -291,22 +361,61 @@ function renderSidebar() {
     el.innerHTML = '<div class="empty">no projects yet — run <code>margay up</code> in a repo</div>';
     return;
   }
-  el.innerHTML = ps.map(p => '<div class="proj-h" title="' + esc(p.primaryPath) + '"><b>' + esc(p.project) + '</b>' +
-      (p.exists ? '' : ' <span class="badge">missing</span>') +
-      '<button class="x" title="remove from this list (re-appears on next up)" ' +
-      'onclick="unregister(\'' + jsq(p.primaryPath) + '\')">✕</button></div>' +
-    (p.exists ? p.worktrees.map(wt =>
-      '<div class="wt-row' + (wt.path === selected ? ' sel' : '') + '" onclick="selectWt(\'' + jsq(wt.path) + '\')">' +
-      '<span class="dot' + (wt.services.length ? ' on' : '') + '"></span>' +
-      '<b>' + esc(wt.isPrimary ? 'primary' : wt.name) + '</b>' +
-      actButton(wt, true) + '</div>').join('') : '')).join('');
+  const groups = new Map();
+  for (const p of ps) {
+    if (!groups.has(p.project)) groups.set(p.project, []);
+    groups.get(p.project).push(p);
+  }
+  let html = '';
+  for (const [name, regs] of groups) {
+    html += '<div class="proj-h"><b>' + esc(name) + '</b></div>';
+    for (const reg of regs) {
+      const svcs = (reg.conf && reg.conf.services && reg.conf.services.length)
+        ? reg.conf.services : [null];   // null: conf unreadable — single fallback node
+      svcs.forEach((sv, si) => {
+        const label = sv ? sv.name : basename(reg.primaryPath) || reg.project;
+        html += '<div class="svc-h" title="' + esc(reg.primaryPath) + '">' + esc(label) +
+          (reg.exists ? '' : ' <span class="badge">missing</span>') +
+          (si === 0 ? '<button class="x" title="remove this repo from the list (re-appears on next up)" ' +
+                      'onclick="unregister(\'' + jsq(reg.primaryPath) + '\')">✕</button>' : '') +
+          '</div>';
+        if (!reg.exists) return;
+        const depName = sv ? (sv.needs || (sv.usesProject || '').split(':')[1] || '') : '';
+        for (const wt of reg.worktrees) {
+          const inst = sv ? wt.services.find(s => s.service === sv.name) : null;
+          const running = sv ? !!inst : wt.services.length > 0;
+          let pair = '';
+          if (inst && inst.uses) {
+            const m = String(inst.uses).match(/:(\d+)\/?$/);
+            if (m) pair = ' <span class="pair">→ ' + esc(depName || 'dep') + ' :' + m[1] + '</span>';
+          }
+          html += '<div class="wt-row' + (wt.path === selected ? ' sel' : '') +
+            '" onclick="selectWt(\'' + jsq(wt.path) + '\')">' +
+            '<span class="dot' + (running ? ' on' : '') + '"></span>' +
+            '<b>' + esc(wt.isPrimary ? 'primary' : wt.name) + pair + '</b>' +
+            (sv ? svcButton(wt, sv, reg) : actButton(wt, true)) + '</div>';
+        }
+      });
+    }
+  }
+  el.innerHTML = html;
+}
+
+function summaryButton(p, wt) {
+  if (busy.has(wt.path)) return '<span class="spin">working…</span>';
+  const svcs = (p.conf && p.conf.services) || [];
+  if (!wt.services.length && svcs.length === 1 && (svcs[0].needs || svcs[0].usesProject))
+    return '<button class="up" onclick="actUp(\'' + jsq(wt.path) + '\',\'' + jsq(svcs[0].name) +
+           '\',\'' + jsq(p.primaryPath) + '\')">up</button>';
+  return actButton(wt, false);
 }
 
 function renderSummary() {
   const el = document.getElementById('summary');
   const hit = selected && findWt(selected);
   if (!hit) { el.innerHTML = '<div class="empty">select a worktree</div>'; return; }
-  const { wt } = hit;
+  const { p, wt } = hit;
+  if (pendingPick && pendingPick.wt === wt.path) { renderPicker(el, wt); return; }
   const rows = [];
   if (wt.url) rows.push(['root', '<a href="' + esc(wt.url) + '" target="_blank" rel="noopener">' + esc(wt.url) + '</a>']);
   else if (!wt.services.length && wt.hintUrl) rows.push(['root', '<span class="hint">' + esc(wt.hintUrl) + ' (not running)</span>']);
@@ -315,7 +424,7 @@ function renderSummary() {
   const meta = wt.services.map(s =>
     esc(s.service) + ': pid ' + esc(s.pid) + (s.dbName ? ' · db ' + esc(s.dbName) : '')).join('  ·  ');
   el.innerHTML =
-    '<h2>' + esc(wt.isPrimary ? 'primary' : wt.name) + ' ' + actButton(wt, false) + '</h2>' +
+    '<h2>' + esc(wt.isPrimary ? 'primary' : wt.name) + ' ' + summaryButton(p, wt) + '</h2>' +
     '<div class="branch">' + esc(wt.branch) + '</div>' +
     '<div class="path">' + esc(wt.path) + '</div>' +
     (wt.collision ? '<div class="badge">slug collision — port links only</div>' : '') +

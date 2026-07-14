@@ -25,7 +25,7 @@ repo's primary checkout. Updates: `git pull` — nothing to rebuild.
 ## Usage
 
 ```
-usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees
+usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees
 ```
 
 From inside any worktree of a configured repo:
@@ -38,6 +38,8 @@ margay up api --fresh      # drop + recreate the branch DB before starting
 margay up api --empty      # create the branch DB but skip seeding
 margay up web --use api=8300                              # pin a dep to a port…
 margay up web --use backend=https://staging.acme.dev:443  # …or a URL
+margay up web --use backend=none   # start with NO backend (needs uses_optional=1;
+                                   # the start hook can e.g. enable mock mode)
 
 margay up feat-payments        # target another worktree by branch or dirname
 margay up feat-payments web    # one service in that worktree
@@ -53,9 +55,16 @@ margay down --all          # stop everything margay started
 
 Local web control panel at `http://127.0.0.1:7997` (foreground; Ctrl-C stops).
 Shows every project you have ever run `margay up` in (auto-learned into
-`~/.margay/projects.json`) in a two-pane layout: a left sidebar listing all
-worktrees grouped by project (named by directory, primary checkout shown as
-**primary**) and a right pane with the selected worktree's detail. The detail
+`~/.margay/projects.json`) in a two-pane layout: a left sidebar tree —
+project → service (one node per registered repo's declared service; repos
+sharing a `project` name merge under one heading) → worktree (named by
+directory, primary checkout shown as **primary**, running rows annotated
+with their pairing, e.g. `→ backend :8190`) — and a right pane with the
+selected worktree's detail. Pressing **up** on a service that declares a
+dependency pairs explicitly: one live instance pairs silently, several open
+a picker, none offers mock mode / `main_port` when the dependency is
+optional. The log area fills the remaining window height (drag the divider
+to pin it). The detail
 pane shows a summary (name, branch, path, one-click up/down) with a dedicated
 URLs block (root URL and one line per running service, clickable), followed by
 auto-opened log tabs — one per running service, plus a command tab for up/down
@@ -141,6 +150,35 @@ below.
   if `start()` doesn't `exec` into the real server (e.g. it's a wrapper
   script that forks), margay ends up killing the wrapper and orphaning
   the actual process.
+
+## Cross-repo pairs (frontend ↔ backend)
+
+A frontend repo declares its backend with
+`service_web_uses_project="<project>:<service>"`. On `up`, margay resolves
+the pairing in this order: an explicit `--use <dep>=<port|url|none>` →
+last-started live instance of that service → `main_port` (non-optional
+services only) → error. The result is injected into `start()` as
+`<DEP>_PORT`/`<DEP>_URL` and recorded per instance (visible in `status` and
+the UI). Add `service_<name>_uses_optional=1` to make the dependency
+optional: with no live instance (or `--use <dep>=none`) the service starts
+with those vars **unset**, and the start hook decides what that means —
+`examples/spendprism-webapp.margay.conf` flips the app into its MSW mock
+mode.
+
+**Keeping the proxy URL through an OIDC login (Keycloak):** if the app pins
+its redirect with an env var (e.g. `VITE_OIDC_REDIRECT_URI`), the login
+round-trip lands back on `localhost:<port>` and abandons the
+per-worktree proxy URL. Blank the var in the generated `.env.local` so the
+app falls back to `window.location.origin`, and loosen the **dev** realm
+client once — Valid redirect URIs `*`, Valid post-logout redirect URIs `+`,
+Web origins `*` (hostname wildcards like `http://*.p.localhost` are not
+valid Keycloak patterns, hence the catch-all; dev realms only):
+
+```bash
+kcadm.sh update clients/<client-uuid> -r <realm> \
+  -s 'redirectUris=["*"]' -s 'webOrigins=["*"]' \
+  -s 'attributes."post.logout.redirect.uris"="+"'
+```
 
 ## Worktrees
 

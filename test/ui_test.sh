@@ -64,10 +64,15 @@ cat > "$MARGAY_HOME/registry.json" <<EOF
   "dbName":null,"uses":null,"log":null,"pid":999999,"startedAt":"2026-07-13T00:00:02Z"}]
 EOF
 
-# mock margay for POST endpoints (up succeeds, down fails)
+# mock margay for POST endpoints (up succeeds, down fails) and conf-json
+touch "$PRIMARY/.margay.conf"   # conf_meta needs the file to exist (mtime cache key)
 MOCK="$MARGAY_HOME/mock-margay"
 cat > "$MOCK" <<'EOF'
 #!/usr/bin/env bash
+if [[ "$1" == "conf-json" ]]; then
+  echo '{"project":"fake","services":[{"name":"api","ports":"7100-7104","needs":null,"usesProject":null,"usesOptional":false,"mainPort":null},{"name":"web","ports":"7110-7114","needs":"api","usesProject":null,"usesOptional":true,"mainPort":8090}]}'
+  exit 0
+fi
 echo "mock: $* (cwd=$PWD)"
 [[ "$1" == "down" ]] && exit 1
 exit 0
@@ -122,6 +127,43 @@ assert_eq "http://web.$SLUG.fake.localhost:$PROXYPORT/" \
   "state: web service url is service-prefixed subdomain"
 assert_eq "false" "$(jq -r '.collision' <<<"$REPO_WT")" "state: no collision flag"
 
+# --- /api/state conf metadata (ui v4) ---
+assert_eq "2"    "$(jq -r '.projects[0].conf.services | length' <<<"$st")" "state: conf metadata carries declared services"
+assert_eq "true" "$(jq -r '.projects[0].conf.services[1].usesOptional' <<<"$st")" "state: usesOptional surfaces"
+assert_eq "api"  "$(jq -r '.projects[0].conf.services[1].needs' <<<"$st")" "state: needs surfaces"
+assert_eq "null" "$(jq -r '.projects[1].conf' <<<"$st")" "state: missing project has null conf"
+assert_eq "http://localhost:$UPSTREAM_PORT" \
+  "$(jq -r '.services[] | select(.service=="web") | .uses' <<<"$REPO_WT")" \
+  "state: running instance surfaces its uses pairing"
+
+# --- /api/pair-options (ui v4) ---
+po="$(curl -s "$BASE/api/pair-options?primary=$PRIMARY&service=web")"
+assert_eq "api"  "$(jq -r '.dep' <<<"$po")"        "pair-options: dep name resolved from needs"
+assert_eq "true" "$(jq -r '.optional' <<<"$po")"   "pair-options: optional flag surfaces"
+assert_eq "8090" "$(jq -r '.mainPort' <<<"$po")"   "pair-options: mainPort surfaces"
+assert_eq "1"    "$(jq -r '.candidates | length' <<<"$po")" "pair-options: one live candidate"
+assert_eq "wt"   "$(jq -r '.candidates[0].worktree' <<<"$po")" "pair-options: candidate worktree basename"
+assert_eq "$UPSTREAM_PORT" "$(jq -r '.candidates[0].port' <<<"$po")" "pair-options: candidate port"
+
+cp "$MARGAY_HOME/registry.json" "$MARGAY_HOME/registry.json.bak"
+python3 - "$MARGAY_HOME" "$$" <<'PYEOF'
+import json, sys
+home, pid = sys.argv[1], int(sys.argv[2])
+reg = json.load(open(home + "/registry.json"))
+reg.append({"project":"fake","service":"api","branch":"other","worktreePath":"/tmp/wt-other","port":7777,
+            "dbName":None,"uses":None,"log":None,"pid":pid,"startedAt":"2026-07-13T01:00:00Z"})
+json.dump(reg, open(home + "/registry.json", "w"))
+PYEOF
+po2="$(curl -s "$BASE/api/pair-options?primary=$PRIMARY&service=web")"
+assert_eq "2" "$(jq -r '.candidates | length' <<<"$po2")" "pair-options: second live instance becomes a candidate"
+mv "$MARGAY_HOME/registry.json.bak" "$MARGAY_HOME/registry.json"
+
+po3="$(curl -s "$BASE/api/pair-options?primary=$PRIMARY&service=api")"
+assert_eq "null" "$(jq -r '.dep' <<<"$po3")" "pair-options: dep-less service says null"
+assert_eq "0"    "$(jq -r '.candidates | length' <<<"$po3")" "pair-options: dep-less service has no candidates"
+po4="$(curl -s "$BASE/api/pair-options?primary=/nonexistent/margay-test&service=web")"
+assert_eq "null" "$(jq -r '.dep' <<<"$po4")" "pair-options: unknown project degrades to null dep"
+
 # --- /api/log ---
 r="$(curl -s "$BASE/api/log?file=$LOG&offset=-1")"
 assert_eq "hello log" "$(jq -r '.data' <<<"$r" | head -1)" "log: initial tail returns content"
@@ -157,6 +199,18 @@ assert_eq "false" "$(jq -r '.ok' <<<"$r")" "down: ok=false on failure"
 code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
      -d '{"worktreePath":"/nonexistent/margay-test"}' "$BASE/api/up")"
 assert_eq "400" "$code" "up: missing worktree dir is 400"
+
+# --- /api/up service + use passthrough (ui v4) ---
+r="$(curl -s -X POST -d "{\"worktreePath\":\"$REPO\",\"service\":\"web\",\"use\":{\"name\":\"api\",\"value\":\"1234\"}}" "$BASE/api/up")"
+assert_contains "$(jq -r '.output' <<<"$r")" "mock: up web --use api=1234" "up: forwards service and --use pairing"
+r="$(curl -s -X POST -d "{\"worktreePath\":\"$REPO\",\"service\":\"web\",\"use\":{\"name\":\"api\",\"value\":\"none\"}}" "$BASE/api/up")"
+assert_contains "$(jq -r '.output' <<<"$r")" "mock: up web --use api=none" "up: forwards --use none"
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+     -d "{\"worktreePath\":\"$REPO\",\"use\":{\"name\":\"api\",\"value\":\"\$(rm -rf /)\"}}" "$BASE/api/up")"
+assert_eq "400" "$code" "up: non port/none use value rejected"
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+     -d "{\"worktreePath\":\"$REPO\",\"service\":\"web; rm\"}" "$BASE/api/up")"
+assert_eq "400" "$code" "up: bad service name rejected"
 r="$(curl -s -X POST -d '{"primaryPath":"/nonexistent/margay-test"}' "$BASE/api/unregister")"
 assert_contains "$(jq -r '.output' <<<"$r")" "mock: unregister /nonexistent/margay-test" \
   "unregister: shells out to margay unregister <path>"

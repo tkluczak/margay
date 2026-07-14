@@ -70,6 +70,7 @@ Per service `<name>`:
 - `service_<name>_needs` (optional) — another declared service this one consumes.
 - `service_<name>_uses_project` (optional) — `"<project>:<service>"`: like `needs`, but the dependency lives in a *different* project's repo (e.g. a frontend repo pointing at a backend repo's service). Resolution: last-started live instance of that project's service → this service's `main_port` → error.
 - `service_<name>_main_port` (optional) — fallback port for `needs`/`uses_project` resolution when no live instance exists (e.g. the port your non-sandboxed main stack uses).
+- `service_<name>_uses_optional` (optional, `0`/`1`) — `1` makes the `needs`/`uses_project` dependency optional: with no live instance (or an explicit `--use <dep>=none`) the service starts anyway with `<DEP>_PORT`/`<DEP>_URL` **unset**, and the start hook decides what "no dependency" means (e.g. flip the app into mock mode). Optional services never fall back to `main_port` silently — `main_port` stays an explicit `--use` choice.
 
 ### Config resolution order
 
@@ -91,12 +92,12 @@ Per service `<name>`:
 ## CLI surface
 
 ```
-usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty] | down [worktree|--all] | status | worktrees
+usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees
 ```
 
 - `up` with no service → all declared services in dependency (`needs`) order.
 - `up <worktree>` / `down <worktree>` — target another worktree of the repo from wherever you stand; `<worktree>` matches the directory basename or branch name, exactly or as a unique substring (see `docs/worktrees-listing-and-targeting.md`).
-- `--use NAME=…` overrides dependency resolution (`needs` or `uses_project`) for the named service (e.g. `margay up web --use api=8290`).
+- `--use NAME=…` overrides dependency resolution (`needs` or `uses_project`) for the named service (e.g. `margay up web --use api=8290`); `--use NAME=none` (only with `uses_optional=1`) forces the empty-dep start even when instances are live.
 - `--fresh` / `--empty` apply to each started service that declares a DB (mutually exclusive).
 - `down` stops the current worktree's services; `--all` stops every margay-managed process. If a stopped launcher orphaned the real listener, `down` reaps it by port.
 - `status` lists live sandboxes across all projects; `worktrees` lists the current repo's worktrees with live-sandbox annotations.
@@ -104,7 +105,7 @@ usage: margay up [worktree] [service ...] [--use NAME=PORT|URL] [--fresh|--empty
 ## Engine internals
 
 - **Registry** `~/.margay/registry.json` (state dir `~/.margay/`, logs `~/.margay/logs/<project>-<branch-slug>-<service>.log`). Record schema: `{project, service, branch, worktreePath, port, dbName, uses, pid, startedAt}`. Dead PIDs are pruned lazily on every read.
-- **Dependency resolution order:** live instance of the named service in the *same worktree* → last-started live instance in the *same project* → `service_<name>_main_port` if set → error with a hint. Injected as `<NAME>_PORT` / `<NAME>_URL` (service name uppercased, non-alnum → `_`).
+- **Dependency resolution order:** `--use` override → live instance of the named service in the *same worktree* → last-started live instance in the *same project* → then `service_<name>_main_port` if set → error with a hint (non-optional), or an empty-dep start (`uses_optional=1`; no `main_port` fallback). Injected as `<NAME>_PORT` / `<NAME>_URL` (service name uppercased, non-alnum → `_`).
 - **DB lifecycle:** branch-keyed names `<project>_sb_<slug>` (63-char Postgres identifier cap); exists/create/drop/seed built on the conf's `postgres_psql`/`postgres_dump` hooks. Created once, reused on later `up`s of the same branch. A failed preparation (unreachable Postgres, failed seed) aborts the `up` — a half-seeded DB is dropped rather than left behind.
 - **Launch mechanics:** per-service backgrounded subshell — env layering is `env_file` (from the primary) → engine vars (`PORT`, `DB_*`, dep vars) → `service_<name>_start()`; stdout+stderr to the per-service logfile; the subshell PID (which `start()` should `exec` into) is what `down`/`status` track.
 - **Backing services stay out of scope:** margay does not start Postgres or other infrastructure; if `postgres_psql` fails it reports and exits.
