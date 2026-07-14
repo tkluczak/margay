@@ -180,6 +180,15 @@ kcadm.sh update clients/<client-uuid> -r <realm> \
   -s 'attributes."post.logout.redirect.uris"="+"'
 ```
 
+Prefer to keep the realm strict? Skip the wildcard and let margay register
+each sandbox's exact origins instead: declare `service_<name>_on_up()` —
+margay runs it after every successful `up` with `MARGAY_ROOT_HOST` /
+`MARGAY_SERVICE_HOST` set to the proxy hostnames (and `PORT`), so the hook
+can idempotently append `http://$MARGAY_ROOT_HOST/*` etc. to the client's
+redirect URIs (set Web origins to `+` once so CORS follows the redirect
+list). A failing hook only warns — the sandbox still comes up. See the
+`service_web_on_up()` example in `examples/spendprism-webapp.margay.conf`.
+
 ## Worktrees
 
 - `margay worktrees` — every worktree of the current repo with its live

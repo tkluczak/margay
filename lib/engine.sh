@@ -20,6 +20,14 @@ margay::slugify() {
     | sed -E 's/[^a-z0-9]+/_/g; s/^_+//; s/_+$//'
 }
 
+# Host-name slug — MUST mirror slugify() in lib/ui.py (dashes, not underscores)
+# so hooks see the same hostnames the proxy actually routes.
+margay::host_slug() {
+  echo "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9-]/-/g; s/-+/-/g; s/^-+//; s/-+$//'
+}
+
 margay::db_name() {
   local slug; slug="$(margay::slugify "$2")"
   echo "${1}_sb_${slug}" | cut -c1-63

@@ -355,6 +355,13 @@ r="$(curl -s -H "Host: v6svc.$SLUG.fake.localhost" "http://127.0.0.1:$PROXYPORT/
 assert_contains "$r" "v6 upstream says hi from /hello6" "proxy: reaches an IPv6-loopback-only upstream"
 kill $V6_PID 2>/dev/null
 
+# --- host_slug (bash) ↔ slugify (python) parity — proxy hostnames must agree ---
+for name in 'feature+analytics-bc' '  ABC/123!! ' 'w1_fiscal.profile'; do
+  b="$(bash -c "source '$HERE/../lib/engine.sh'; margay::host_slug '$name'")"
+  py="$(python3 -c "import sys; sys.path.insert(0,'$HERE/../lib'); import ui; print(ui.slugify('$name'))")"
+  assert_eq "$py" "$b" "host slug parity: [$name]"
+done
+
 # --- routing helpers (python import harness) ---
 # NOTE: this block mutates $MARGAY_HOME/projects.json and registry.json fixtures;
 # it must run AFTER all running-server assertions
