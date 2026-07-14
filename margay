@@ -54,7 +54,7 @@ margay::prepare_db() {   # service fresh empty → echoes db name ('' if none); 
 }
 
 margay::launch() {   # service fresh empty use-overrides
-  local svc="$1" port db log pid uses="" dep depproj="" depsvc="" o out dep_port="" dep_url="" optional main
+  local svc="$1" port db log pid uses="" dep depproj="" depsvc="" o out dep_port="" dep_url="" optional main root_host svc_host pslug
   port="$(margay::alloc_port "$svc")" \
     || die "no free port for '$svc' in $(margay::svc_var "$svc" ports)"
   db="$(margay::prepare_db "$svc" "$2" "$3")" \
@@ -101,6 +101,19 @@ margay::launch() {   # service fresh empty use-overrides
   pid=$!
   margay::registry_add "$(margay::registry_record "$project" "$svc" "$BRANCH" "$WORKTREE" "$port" "$db" "$uses" "$pid" "$log")"
   echo "  ✔ $svc up → http://localhost:$port   (pid $pid, log: $log)"
+  # Optional post-up hook: gets the proxy hostnames this sandbox will be
+  # served under (same slug rules as the ui proxy), e.g. to register OAuth
+  # redirect origins. Runs foreground; failure warns but never blocks the up.
+  if margay::svc_fn_exists "$svc" on_up; then
+    pslug="$(margay::host_slug "$project")"
+    if [[ "$WORKTREE" == "$PRIMARY" ]]; then root_host="$pslug.localhost"
+    else root_host="$(margay::host_slug "$(basename "$WORKTREE")").$pslug.localhost"; fi
+    svc_host="$(margay::host_slug "$svc").$root_host"
+    ( cd "$WORKTREE"
+      export PORT="$port" MARGAY_ROOT_HOST="$root_host" MARGAY_SERVICE_HOST="$svc_host"
+      "service_${svc}_on_up" ) \
+      || echo "margay: warning: service_${svc}_on_up failed (sandbox is still up)" >&2
+  fi
 }
 
 margay::cmd_up() {

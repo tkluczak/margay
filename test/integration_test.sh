@@ -161,6 +161,39 @@ assert_contains "$cj2" '"needs":"api"' "conf-json carries same-project needs"
 
 ( cd "$REPO3" && "$MARGAY" unregister >/dev/null 2>&1 )   # keep the later projects.json count stable
 
+# --- service_<name>_on_up hook (proxy-hostname registration) ---
+REPO4="$(mktemp -d)"
+( cd "$REPO4" && git init -q && git commit -q --allow-empty -m init )
+cat > "$REPO4/.margay.conf" <<EOF
+project="hookproj"
+services="api"
+service_api_ports="7185-7189"
+service_api_start() { exec sleep 300; }
+service_api_on_up() { echo "HOOK root=\$MARGAY_ROOT_HOST svc=\$MARGAY_SERVICE_HOST port=\$PORT" > "$REPO4/hook.out"; }
+EOF
+( cd "$REPO4" && "$MARGAY" up >/dev/null 2>&1 )
+assert_contains "$(cat "$REPO4/hook.out" 2>/dev/null)" "root=hookproj.localhost svc=api.hookproj.localhost port=7185"   "on_up: primary hook sees project root host, service host and port"
+( cd "$REPO4" && "$MARGAY" down >/dev/null 2>&1 )
+
+( cd "$REPO4" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m base \
+    && git worktree add -q "$REPO4/.claude/worktrees/My+WT" -b feat-hook )
+( cd "$REPO4" && "$MARGAY" up feat-hook >/dev/null 2>&1 )
+assert_contains "$(cat "$REPO4/hook.out" 2>/dev/null)" "root=my-wt.hookproj.localhost svc=api.my-wt.hookproj.localhost"   "on_up: worktree hook host is the dash-slugged basename"
+( cd "$REPO4" && "$MARGAY" down feat-hook >/dev/null 2>&1 )
+
+cat > "$REPO4/.margay.conf" <<EOF
+project="hookproj"
+services="api"
+service_api_ports="7185-7189"
+service_api_start() { exec sleep 300; }
+service_api_on_up() { exit 1; }
+EOF
+hook_fail="$(cd "$REPO4" && "$MARGAY" up 2>&1)"; hook_rc=$?
+assert_contains "$hook_fail" "warning: service_api_on_up failed" "on_up: failing hook warns"
+assert_contains "$hook_fail" "api up → http://localhost:7185" "on_up: failing hook does not block the up"
+if [[ "$hook_rc" == 0 ]]; then echo "ok: on_up failure keeps exit 0"; else echo "FAIL: on_up failure changed exit code"; FAILS=$((FAILS+1)); fi
+( cd "$REPO4" && "$MARGAY" down >/dev/null 2>&1; "$MARGAY" unregister >/dev/null 2>&1 )
+
 # --- unregister ---
 unreg="$(cd "$REPO" && "$MARGAY" unregister 2>&1)"
 assert_contains "$unreg" "unregistered" "unregister (no arg) removes current repo"

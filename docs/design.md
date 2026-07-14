@@ -70,6 +70,7 @@ Per service `<name>`:
 - `service_<name>_needs` (optional) — another declared service this one consumes.
 - `service_<name>_uses_project` (optional) — `"<project>:<service>"`: like `needs`, but the dependency lives in a *different* project's repo (e.g. a frontend repo pointing at a backend repo's service). Resolution: last-started live instance of that project's service → this service's `main_port` → error.
 - `service_<name>_main_port` (optional) — fallback port for `needs`/`uses_project` resolution when no live instance exists (e.g. the port your non-sandboxed main stack uses).
+- `service_<name>_on_up()` (optional) — post-launch hook, run foreground from the worktree after the service starts and is registered; gets `PORT` plus `MARGAY_ROOT_HOST`/`MARGAY_SERVICE_HOST` — the proxy hostnames the sandbox will be served under (same slug rules as the ui proxy). For side registrations like OAuth redirect origins. A failing hook prints a warning and never blocks the `up`.
 - `service_<name>_uses_optional` (optional, `0`/`1`) — `1` makes the `needs`/`uses_project` dependency optional: with no live instance (or an explicit `--use <dep>=none`) the service starts anyway with `<DEP>_PORT`/`<DEP>_URL` **unset**, and the start hook decides what "no dependency" means (e.g. flip the app into mock mode). Optional services never fall back to `main_port` silently — `main_port` stays an explicit `--use` choice.
 
 ### Config resolution order

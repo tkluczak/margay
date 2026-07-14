@@ -17,6 +17,9 @@ assert_fail() { if "$@"; then echo "FAIL: expected failure: $*"; FAILS=$((FAILS+
 assert_eq "feature_analytics_bc" "$(margay::slugify 'feature/analytics-bc')" "slugify branch"
 assert_eq "abc_123" "$(margay::slugify '  ABC/123!! ')" "slugify trims+lowers"
 assert_eq "demo_sb_feature_analytics_bc" "$(margay::db_name demo 'feature/analytics-bc')" "db_name has project prefix"
+assert_eq "feature-analytics-bc" "$(margay::host_slug 'feature+analytics-bc')" "host_slug dashes, not underscores"
+assert_eq "abc-123" "$(margay::host_slug '  ABC/123!! ')" "host_slug trims+lowers"
+assert_eq "w1-fiscal-profile" "$(margay::host_slug 'w1-fiscal-profile')" "host_slug keeps clean names"
 assert_eq "64" "$(margay::db_name demo "$(printf 'x%.0s' {1..200})" | wc -c | tr -d ' ')" "db_name len incl newline<=64"
 
 rm -f "$REGISTRY"
