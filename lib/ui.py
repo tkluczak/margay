@@ -83,6 +83,20 @@ def loopback_peer(ip):
     return ip == "::1" or ip.startswith("127.") or ip.startswith("::ffff:127.")
 
 
+# Base domain for sandbox hostnames. "localhost" (the default) keeps margay
+# loopback-locked; any other value (--domain / MARGAY_DOMAIN) implies serving
+# remote peers — the VPN/firewall is the perimeter then.
+DOMAIN = {"name": os.environ.get("MARGAY_DOMAIN") or "localhost"}
+
+
+def exposed():
+    return DOMAIN["name"] != "localhost"
+
+
+def peer_ok(ip):
+    return exposed() or loopback_peer(ip)
+
+
 def host_url(host):
     if PROXY["port"] in (None, 80):
         return "http://%s/" % host
@@ -120,8 +134,8 @@ def build_routes():
     for (project, wt_path), rows in ordered:
         pslug = slugify(project)
         is_primary = primaries.get(project) == wt_path
-        base = ("%s.localhost" % pslug if is_primary
-                else "%s.%s.localhost" % (slugify(os.path.basename(wt_path or "")), pslug))
+        base = ("%s.%s" % (pslug, DOMAIN["name"]) if is_primary
+                else "%s.%s.%s" % (slugify(os.path.basename(wt_path or "")), pslug, DOMAIN["name"]))
         if base in claimed or base in routes:
             info[wt_path] = {"host": None, "collision": True}
             continue
@@ -180,8 +194,8 @@ def state():
                 name = os.path.basename(wt["path"])
                 is_primary = wt["path"] == primary
                 slug = slugify(name)
-                base = ("%s.localhost" % pslug if is_primary
-                        else "%s.%s.localhost" % (slug, pslug))
+                base = ("%s.%s" % (pslug, DOMAIN["name"]) if is_primary
+                        else "%s.%s.%s" % (slug, pslug, DOMAIN["name"]))
                 info = wt_info.get(wt["path"], {})
                 services = []
                 for r in live:
@@ -263,11 +277,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def origin_ok(self):
         port = self.server.server_address[1]
-        host = self.headers.get("Host", "")
-        if host not in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+        hosts = {"127.0.0.1:%d" % port, "localhost:%d" % port}
+        if exposed():
+            hosts.add("%s:%d" % (DOMAIN["name"], port))
+        if self.headers.get("Host", "") not in hosts:
             return False
         origin = self.headers.get("Origin")
-        if origin and origin not in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port):
+        if origin and origin not in {"http://%s" % h for h in hosts}:
             return False
         return True
 
@@ -357,6 +373,7 @@ class Handler(BaseHTTPRequestHandler):
             with mutate_lock:   # registry writes are not concurrent-safe
                 proc = subprocess.run(
                     [MARGAY_BIN] + argv, cwd=cwd,
+                    env={**os.environ, "MARGAY_DOMAIN": DOMAIN["name"]},
                     capture_output=True, text=True, timeout=300,
                 )
         except (OSError, subprocess.TimeoutExpired) as e:
@@ -377,7 +394,7 @@ class ProxyServer(ThreadingHTTPServer):
     address, where any LAN host can otherwise reach the raw parser)."""
 
     def verify_request(self, request, client_address):
-        return loopback_peer(client_address[0])
+        return peer_ok(client_address[0])
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -397,7 +414,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self): self._proxy()
 
     def _proxy(self):
-        if not loopback_peer(self.client_address[0]):
+        if not peer_ok(self.client_address[0]):
             self._simple_error(403, "loopback connections only")
             return
         if self.headers.get("Transfer-Encoding"):
@@ -528,14 +545,19 @@ def main():
     ap.add_argument("--port", type=int, default=7997)
     ap.add_argument("--proxy-port", type=int, default=80)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--domain", default=DOMAIN["name"],
+                    help="base domain for sandbox hostnames (default: localhost, "
+                         "loopback-only; anything else serves remote peers too)")
     args = ap.parse_args()
+    DOMAIN["name"] = args.domain
+    ui_addr = ("", args.port) if exposed() else ("127.0.0.1", args.port)
     try:
-        srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+        srv = ThreadingHTTPServer(ui_addr, Handler)
     except OSError as e:
         print("margay ui: cannot bind port %d (%s) — is another margay ui running? Try --port N" % (args.port, e))
         return 1
     proxy_srv, wildcard, bind_err = None, False, None
-    attempts = ([("", args.proxy_port)] if os.environ.get("MARGAY_UI_WILDCARD")
+    attempts = ([("", args.proxy_port)] if exposed() or os.environ.get("MARGAY_UI_WILDCARD")
                 else [("127.0.0.1", args.proxy_port), ("", args.proxy_port)])
     for addr in attempts:
         try:
@@ -554,8 +576,10 @@ def main():
         PROXY["port"] = args.proxy_port
         threading.Thread(target=proxy_srv.serve_forever, daemon=True).start()
         suffix = "" if args.proxy_port == 80 else ":%d" % args.proxy_port
-        note = "   (wildcard bind, loopback-only)" if wildcard else ""
-        print("margay proxy → http://<worktree>.<project>.localhost%s/%s" % (suffix, note))
+        note = ("   (EXPOSED to the network — VPN/firewall is the perimeter)" if exposed()
+                else "   (wildcard bind, loopback-only)" if wildcard else "")
+        print("margay proxy → http://<worktree>.<project>.%s%s/%s"
+              % (DOMAIN["name"], suffix, note))
     else:
         print("margay ui: warning: cannot bind proxy port %d (%s) — "
               "subdomain URLs disabled, falling back to port links" % (args.proxy_port, bind_err))

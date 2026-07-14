@@ -51,7 +51,7 @@ margay down feat-payments  # stop another worktree's
 margay down --all          # stop everything margay started
 ```
 
-### `margay ui [--port N] [--proxy-port N]` (and `--no-browser`)
+### `margay ui [--port N] [--proxy-port N] [--domain D]` (and `--no-browser`)
 
 Local web control panel at `http://127.0.0.1:7997` (foreground; Ctrl-C stops).
 Shows every project you have ever run `margay up` in (auto-learned into
@@ -81,6 +81,32 @@ falls back to plain `localhost:<port>` links. On macOS the proxy binds the
 wildcard address (loopback-only enforced per connection) because the OS
 restricts low-port binds on specific addresses. Needs `python3` (stdlib
 only); the rest of margay does not.
+
+#### Running on a server / VM (`--domain`)
+
+By default everything is loopback-locked. `--domain devel.local` (or
+`MARGAY_DOMAIN=devel.local` in the environment) switches the hostname scheme
+to `http://<service>.<worktree>.<project>.devel.local/` **and exposes both
+the proxy and the control panel to the network** — any device that can reach
+the VM can browse sandboxes and press up/down. Your VPN/firewall is the
+perimeter; margay adds no auth in this mode.
+
+Checklist for a homelab VM:
+
+- **DNS:** wildcard the domain at your resolver, e.g. dnsmasq/Pi-hole
+  `address=/devel.local/<VM-IP>`. (mDNS alone cannot resolve wildcard
+  subdomains — you need a real DNS server for `*.devel.local`.)
+- **Port 80 on Linux:** either run the UI with
+  `AmbientCapabilities=CAP_NET_BIND_SERVICE` under systemd, or use
+  `--proxy-port 8080` (URLs then carry `:8080`).
+- **Hooks:** `service_<name>_on_up()` sees the real hostnames
+  (`MARGAY_ROOT_HOST=<wt>.<proj>.devel.local`), so e.g. Keycloak
+  redirect-URI registration follows the domain automatically. Set
+  `MARGAY_DOMAIN` in the shell too if you run `margay up` over SSH directly.
+- **Apps with absolute localhost URLs** (e.g. an OIDC authority of
+  `http://localhost:8788`) must be pointed at the domain
+  (`http://devel.local:8788`) in the machine-local conf/env — remote
+  browsers can't reach the VM's localhost.
 
 ### `margay unregister [path|project]`
 

@@ -106,8 +106,9 @@ margay::launch() {   # service fresh empty use-overrides
   # redirect origins. Runs foreground; failure warns but never blocks the up.
   if margay::svc_fn_exists "$svc" on_up; then
     pslug="$(margay::host_slug "$project")"
-    if [[ "$WORKTREE" == "$PRIMARY" ]]; then root_host="$pslug.localhost"
-    else root_host="$(margay::host_slug "$(basename "$WORKTREE")").$pslug.localhost"; fi
+    local dsuf="${MARGAY_DOMAIN:-localhost}"
+    if [[ "$WORKTREE" == "$PRIMARY" ]]; then root_host="$pslug.$dsuf"
+    else root_host="$(margay::host_slug "$(basename "$WORKTREE")").$pslug.$dsuf"; fi
     svc_host="$(margay::host_slug "$svc").$root_host"
     ( cd "$WORKTREE"
       export PORT="$port" MARGAY_ROOT_HOST="$root_host" MARGAY_SERVICE_HOST="$svc_host"
