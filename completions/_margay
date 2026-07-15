@@ -2,11 +2,13 @@
 # zsh completion for margay. Renders `margay __complete` output; computes
 # nothing itself — the targeting grammar lives in margay, not here.
 
-# Turn "candidate<TAB>description" lines into _describe's "candidate:description"
-# pairs. Descriptions may contain ':' (e.g. "api:7100"), which _describe treats
-# as its separator — so escape those before swapping the TAB.
-_margay_pairs() {
-  margay __complete "$1" 2>/dev/null | sed 's/:/\\:/g; s/\t/:/'
+# Turn "candidate<TAB>description<TAB>kind" lines whose kind field matches
+# the awk condition in $2 into _describe's "candidate:description" pairs.
+# Descriptions may contain ':' (e.g. "api:7100"), which _describe treats as
+# its separator — so escape those before swapping the TAB. The kind field is
+# used only for filtering here; it is dropped before _describe ever sees it.
+_margay_filter() {
+  awk -F'\t' "$2"' { print $1 "\t" $2 }' <<<"$1" | sed 's/:/\\:/g; s/\t/:/'
 }
 
 _margay() {
@@ -32,15 +34,23 @@ _margay() {
       # $line[1] is the subcommand ($words[1] is 'margay' itself)
       case "$line[1]" in
         up)
-          local -a wts svcs flags
-          wts=("${(@f)$(_margay_pairs up | grep -v $'^--')}")
-          flags=("${(@f)$(_margay_pairs up | grep $'^--')}")
+          # One call, cached — the old grep-by-'--'-prefix split misgrouped
+          # any worktree whose basename itself starts with '--'; grouping by
+          # the explicit kind field is unambiguous and avoids a second
+          # __complete invocation (and its git+jq cost) per TAB press.
+          local raw
+          raw="$(margay __complete up 2>/dev/null)"
+          local -a wts flags
+          wts=("${(@f)$(_margay_filter "$raw" '$3!="flag"')}")
+          flags=("${(@f)$(_margay_filter "$raw" '$3=="flag"')}")
           _describe -t worktrees 'worktree or service' wts
           _describe -t flags 'flag' flags
           ;;
         down)
+          local rawd
+          rawd="$(margay __complete down 2>/dev/null)"
           local -a dwts
-          dwts=("${(@f)$(_margay_pairs down)}")
+          dwts=("${(@f)$(_margay_filter "$rawd" '1')}")
           _describe -t worktrees 'worktree' dwts
           ;;
       esac

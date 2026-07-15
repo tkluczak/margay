@@ -218,12 +218,16 @@ bad="$("$MARGAY" unregister nothing-here 2>&1)" \
 assert_contains "$bad" "no registered project matches" "unregister miss error"
 
 # --- __complete ---
+# three-field contract: candidate<TAB>description<TAB>kind
 cmpl="$(cd "$REPO" && "$MARGAY" __complete up 2>/dev/null)"
 assert_contains "$cmpl" "wt-b" "__complete up lists the worktree basename"
-assert_contains "$cmpl" "$(printf 'api\tservice')" "__complete up lists api as a service"
-assert_contains "$cmpl" "$(printf 'ui\tservice')" "__complete up lists ui as a service"
+assert_contains "$cmpl" "$(printf 'wt-b\t')" "__complete up worktree row has a description field"
+assert_contains "$cmpl" "$(printf '\tworktree')" "__complete up worktree row is tagged kind=worktree"
+assert_contains "$cmpl" "$(printf 'api\tservice\tservice')" "__complete up lists api as a service, kind=service"
+assert_contains "$cmpl" "$(printf 'ui\tservice\tservice')" "__complete up lists ui as a service, kind=service"
+assert_contains "$cmpl" "$(printf -- '--fresh\tdrop and recreate the db\tflag')" "__complete up --fresh is tagged kind=flag"
 dcmpl="$(cd "$REPO" && "$MARGAY" __complete down 2>/dev/null)"
-assert_contains "$dcmpl" "--all" "__complete down offers --all"
+assert_contains "$dcmpl" "$(printf -- '--all\tevery sandbox everywhere\tflag')" "__complete down offers --all tagged kind=flag"
 
 # silence contract: exit 0, empty stdout, empty stderr on every failure path
 NOGIT="$(mktemp -d)"

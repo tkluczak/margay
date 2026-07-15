@@ -292,9 +292,9 @@ margay::cmd_complete() {
         svcs="$( (margay::config_load "$conf" && printf '%s' "${services:-}") 2>/dev/null )" || svcs=""
       fi
       printf '%s\n' "$joined" | margay::complete_up_candidates "$svcs"
-      printf -- '--fresh\tdrop and recreate the db\n'
-      printf -- '--empty\tcreate the db without seeding\n'
-      printf -- '--use\tNAME=PORT|URL|none — override a dependency\n'
+      printf -- '--fresh\tdrop and recreate the db\tflag\n'
+      printf -- '--empty\tcreate the db without seeding\tflag\n'
+      printf -- '--use\tNAME=PORT|URL|none — override a dependency\tflag\n'
       ;;
     down)
       printf '%s\n' "$joined" | margay::complete_down_candidates

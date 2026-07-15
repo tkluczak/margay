@@ -256,28 +256,31 @@ margay::worktrees_join() {
 
 # Completion candidates for `up`: worktrees (by basename, described by their
 # live sandbox) then declared services. Joined rows on stdin, services in $1.
-# Emits "candidate<TAB>description". Pure: no git, no registry, never fails.
+# Emits "candidate<TAB>description<TAB>kind", kind one of worktree|service.
+# Pure: no git, no registry, never fails.
 margay::complete_up_candidates() {
   local services="${1:-}" path branch sandbox db svc
   while IFS=$'\t' read -r path branch sandbox db; do
     [[ -z "$path" ]] && continue
-    printf '%s\t%s\n' "${path##*/}" "$sandbox"
+    printf '%s\t%s\tworktree\n' "${path##*/}" "$sandbox"
   done
   for svc in $services; do
-    printf '%s\tservice\n' "$svc"
+    printf '%s\tservice\tservice\n' "$svc"
   done
   return 0
 }
 
 # Completion candidates for `down`: only worktrees that actually have a live
 # sandbox (stopping an idle one is a no-op), plus --all. Joined rows on stdin.
+# Emits "candidate<TAB>description<TAB>kind"; worktree rows get kind
+# "worktree", the --all line gets kind "flag".
 margay::complete_down_candidates() {
   local path branch sandbox db
   while IFS=$'\t' read -r path branch sandbox db; do
     [[ -z "$path" ]] && continue
     [[ "$sandbox" == "-" ]] && continue
-    printf '%s\t%s\n' "${path##*/}" "$sandbox"
+    printf '%s\t%s\tworktree\n' "${path##*/}" "$sandbox"
   done
-  printf -- '--all\tevery sandbox everywhere\n'
+  printf -- '--all\tevery sandbox everywhere\tflag\n'
   return 0
 }

@@ -171,22 +171,25 @@ rm -f "$REGISTRY"
 CROWS="$(printf '%s\n' \
   "/tmp/prj	main	-	-" \
   "/tmp/prj/.claude/worktrees/feat-x	feature/x	api:7100 ui:7160	mydb" \
-  "/tmp/prj/.claude/worktrees/det	HEAD	-	-")"
+  "/tmp/prj/.claude/worktrees/det	HEAD	-	-" \
+  "/tmp/prj/.claude/worktrees/--sneaky	feature/sneaky	-	-")"
 
 UPC="$(margay::complete_up_candidates "api ui" <<<"$CROWS")"
-assert_eq "prj	-" "$(printf '%s\n' "$UPC" | sed -n 1p)" "up cand: idle worktree keeps ASCII -"
-assert_eq "feat-x	api:7100 ui:7160" "$(printf '%s\n' "$UPC" | sed -n 2p)" "up cand: live worktree shows service:port"
-assert_eq "det	-" "$(printf '%s\n' "$UPC" | sed -n 3p)" "up cand: detached worktree by basename"
-assert_eq "api	service" "$(printf '%s\n' "$UPC" | sed -n 4p)" "up cand: services follow worktrees"
-assert_eq "ui	service" "$(printf '%s\n' "$UPC" | sed -n 5p)" "up cand: second service"
-assert_eq "5" "$(printf '%s\n' "$UPC" | grep -c .)" "up cand: no extra rows"
+assert_eq "prj	-	worktree" "$(printf '%s\n' "$UPC" | sed -n 1p)" "up cand: idle worktree keeps ASCII -"
+assert_eq "feat-x	api:7100 ui:7160	worktree" "$(printf '%s\n' "$UPC" | sed -n 2p)" "up cand: live worktree shows service:port"
+assert_eq "det	-	worktree" "$(printf '%s\n' "$UPC" | sed -n 3p)" "up cand: detached worktree by basename"
+assert_eq "--sneaky	-	worktree" "$(printf '%s\n' "$UPC" | sed -n 4p)" \
+  "up cand: worktree basename starting with -- is still kind=worktree, not flag"
+assert_eq "api	service	service" "$(printf '%s\n' "$UPC" | sed -n 5p)" "up cand: services follow worktrees"
+assert_eq "ui	service	service" "$(printf '%s\n' "$UPC" | sed -n 6p)" "up cand: second service"
+assert_eq "6" "$(printf '%s\n' "$UPC" | grep -c .)" "up cand: no extra rows"
 
 DNC="$(margay::complete_down_candidates <<<"$CROWS")"
-assert_eq "feat-x	api:7100 ui:7160" "$(printf '%s\n' "$DNC" | sed -n 1p)" "down cand: only live worktrees"
-assert_eq "--all	every sandbox everywhere" "$(printf '%s\n' "$DNC" | sed -n 2p)" "down cand: --all offered"
+assert_eq "feat-x	api:7100 ui:7160	worktree" "$(printf '%s\n' "$DNC" | sed -n 1p)" "down cand: only live worktrees"
+assert_eq "--all	every sandbox everywhere	flag" "$(printf '%s\n' "$DNC" | sed -n 2p)" "down cand: --all offered with kind=flag"
 assert_eq "2" "$(printf '%s\n' "$DNC" | grep -c .)" "down cand: idle worktrees absent"
 
-assert_eq "--all	every sandbox everywhere" "$(margay::complete_down_candidates </dev/null)" "down cand: empty input still offers --all"
+assert_eq "--all	every sandbox everywhere	flag" "$(margay::complete_down_candidates </dev/null)" "down cand: empty input still offers --all"
 assert_eq "" "$(margay::complete_up_candidates "" </dev/null)" "up cand: empty input, no services → empty"
 
 # --- projects.json (static project registry) ---
