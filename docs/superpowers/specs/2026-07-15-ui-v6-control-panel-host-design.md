@@ -19,7 +19,7 @@ a name, and the proxy that would give it one is already running.
 | Name | `margay.<domain>` — `margay.localhost` by default |
 | Replace or add | **both**: the UI keeps listening on `--port`; the proxy adds a route to it. Startup line and browser auto-open **prefer** the pretty URL, fall back to the port URL |
 | Fallback | when the proxy can't bind (`:80` needs privileges), there is no route and the panel is reachable only at `localhost:<port>` — today's behavior, unchanged |
-| Collision | a project slugged `margay` would also claim `margay.<domain>`. **The control panel wins**; the route is inserted after project routes so it overwrites. The project keeps its per-service hosts (`api.margay.localhost`) and its port links; only its root host is shadowed, and startup **warns** — never silent |
+| Collision | a project slugged `margay` would also claim `margay.<domain>`. **The control panel wins.** The reserved host is seeded into `routes`/`claimed` **before** the project loop, so the existing collision branch handles the project untouched: it falls back to **port links for everything** and gets the UI's existing "slug collision — port links only" badge. Startup also **warns** — never silent. *(amended: an earlier draft had the panel's route overwrite project routes afterwards, keeping `api.margay.localhost` alive and shadowing only the root. That does not survive contact with `state()` — `collision` gates every service URL (`lib/ui.py:206`) and `hintUrl` is emitted unconditionally from `base` (`lib/ui.py:211`), so the UI would have gone on advertising `margay.localhost` for that project while the proxy served the panel there. Seeding first reuses already-tested machinery, needs no `state()`/`ui.html` change, and the existing badge is honest.)* |
 | Warning trigger | only on real collision — a **known** project (in `projects.json`) whose slug is `margay`; not every boot. Keyed off known rather than *live* projects so it still fires when nothing is running yet |
 | Exposed mode | works: `margay.<domain>` in `--domain` mode, mirroring v5's posture. **No new exposure** — the panel is already reachable at `<domain>:<ui-port>` there; this is the same reach under a nicer name |
 | `origin_ok` | widened to accept `margay.<domain>` (and `margay.<domain>:<proxy-port>` when the proxy isn't on `:80`). Required, not optional — see below |
@@ -64,12 +64,16 @@ browser → http://margay.localhost/
 - `lib/ui.py`:
   - a module-level `UI = {"port": None}` set by `main()` once the UI listener
     binds, mirroring the existing `PROXY = {"port": None}` idiom.
-  - `build_routes()`: after project routes are built, if `UI["port"]` is set,
-    `routes["margay." + DOMAIN["name"]] = UI["port"]`. Overwrites on
-    collision — the panel wins by construction. **Its `(routes, info)`
-    signature is unchanged**: `_proxy` unpacks it as `routes, _ =
-    build_routes()` (`lib/ui.py:423`), so adding a third return value would
-    break that call site for a value only `main()` wants, once, at startup.
+  - `build_routes()`: **before** the `for (project, wt_path), rows in ordered`
+    loop, if `UI["port"]` is set, seed `routes[reserved] = UI["port"]` and
+    `claimed.add(reserved)` where `reserved = "margay." + DOMAIN["name"]`. The
+    panel wins by construction, and a project slugged `margay` then hits the
+    existing `if base in claimed or base in routes` branch — no new code path.
+    **Its `(routes, info)` signature is unchanged**: `_proxy` unpacks it as
+    `routes, _ = build_routes()` (`lib/ui.py:423`), so adding a third return
+    value would break that call site for a value only `main()` wants, once, at
+    startup.
+  - No change to `state()`, `host_url()`, or `lib/ui.html`.
   - The collision warning is computed in `main()` at startup, independently of
     `build_routes()`: read `projects.json` and warn if any **known** project
     slugs to `margay`. Keyed off known projects rather than live registry rows
@@ -98,8 +102,9 @@ is the one under test.
 - `Host: evil.example` and cross-site `Origin` still 403 — the existing
   assertions at `test/ui_test.sh:221-225` must keep passing.
 - Collision: with a project slugged `margay` live in the fixture registry,
-  `margay.localhost` serves the panel while `api.margay.localhost` still
-  serves that project's service — i.e. the panel shadows only the root host.
+  `margay.localhost` serves the **panel**, and that project's `state()` rows
+  come back with `collision: true` and port-link service URLs — i.e. it
+  degrades exactly as any other slug collision already does.
   Separately, with `margay` present in the fixture `projects.json`, startup
   prints the warning (asserted against the captured startup output).
 - Proxy down: no `margay.*` route; the panel still answers on its port.
