@@ -217,5 +217,33 @@ bad="$("$MARGAY" unregister nothing-here 2>&1)" \
   && { echo "FAIL: unregister miss should fail"; FAILS=$((FAILS+1)); } || true
 assert_contains "$bad" "no registered project matches" "unregister miss error"
 
+# --- __complete ---
+cmpl="$(cd "$REPO" && "$MARGAY" __complete up 2>/dev/null)"
+assert_contains "$cmpl" "wt-b" "__complete up lists the worktree basename"
+assert_contains "$cmpl" "$(printf 'api\tservice')" "__complete up lists api as a service"
+assert_contains "$cmpl" "$(printf 'ui\tservice')" "__complete up lists ui as a service"
+dcmpl="$(cd "$REPO" && "$MARGAY" __complete down 2>/dev/null)"
+assert_contains "$dcmpl" "--all" "__complete down offers --all"
+
+# silence contract: exit 0, empty stdout, empty stderr on every failure path
+NOGIT="$(mktemp -d)"
+err="$( (cd "$NOGIT" && "$MARGAY" __complete up) 2>&1 1>/dev/null )"; rc=$?
+assert_eq "" "$err" "__complete outside a git repo: silent stderr"
+assert_eq "0" "$rc" "__complete outside a git repo: exit 0"
+assert_eq "" "$( (cd "$NOGIT" && "$MARGAY" __complete up) 2>/dev/null )" "__complete outside a git repo: empty stdout"
+
+NOCONF="$(mktemp -d)"
+( cd "$NOCONF" && git init -q && git commit -q --allow-empty -m init )
+err2="$( (cd "$NOCONF" && "$MARGAY" __complete up) 2>&1 1>/dev/null )"; rc2=$?
+assert_eq "" "$err2" "__complete with no conf: silent stderr"
+assert_eq "0" "$rc2" "__complete with no conf: exit 0"
+# a conf-less repo still has worktrees to offer, just no services
+assert_contains "$( (cd "$NOCONF" && "$MARGAY" __complete up) 2>/dev/null )" "$(basename "$NOCONF")" \
+  "__complete with no conf still lists worktrees"
+
+if [[ "$help_out" == *__complete* ]]; then
+  echo "FAIL: __complete leaked into help"; FAILS=$((FAILS+1))
+else echo "ok: __complete is hidden from help"; fi
+
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi
