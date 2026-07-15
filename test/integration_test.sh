@@ -262,6 +262,21 @@ assert_eq "0" "$rcF" "__complete with a conf failing statement: exit 0"
 assert_contains "$( (cd "$FAILCONF" && "$MARGAY" __complete up) 2>/dev/null )" "$(basename "$FAILCONF")" \
   "__complete with a conf failing statement still lists worktree candidates"
 
+# regression: a conf that SOURCES CLEANLY (no syntax error, no failing statements)
+# but FAILS VALIDATION (e.g., sets project but no services) — config_load's _cerr
+# writes to stderr, and the silence contract requires those writes be captured
+# by the inner (...) subshell's 2>/dev/null, not leaked by a bare $(... 2>/dev/null).
+FAILVAL="$(mktemp -d)"
+( cd "$FAILVAL" && git init -q && git commit -q --allow-empty -m init )
+cat > "$FAILVAL/.margay.conf" <<'EOF'
+project="badconf"
+EOF
+errV="$( (cd "$FAILVAL" && "$MARGAY" __complete up) 2>&1 1>/dev/null )"; rcV=$?
+assert_eq "" "$errV" "__complete with conf failing validation: silent stderr"
+assert_eq "0" "$rcV" "__complete with conf failing validation: exit 0"
+assert_contains "$( (cd "$FAILVAL" && "$MARGAY" __complete up) 2>/dev/null )" "$(basename "$FAILVAL")" \
+  "__complete with conf failing validation still lists worktree candidates"
+
 if [[ "$help_out" == *__complete* ]]; then
   echo "FAIL: __complete leaked into help"; FAILS=$((FAILS+1))
 else echo "ok: __complete is hidden from help"; fi

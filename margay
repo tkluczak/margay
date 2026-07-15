@@ -284,6 +284,9 @@ margay::cmd_complete() {
       # we just lose the service candidates for this call, which is
       # acceptable (worktree candidates are unaffected). Also silences
       # config_load's own stderr (_cerr writes there on validation failure).
+      # The inner `(...)` also scopes `2>/dev/null` over both `config_load` and
+      # `printf` as one unit — `config_load`'s own `_cerr` output would otherwise
+      # leak past a bare `$(cmd1 && cmd2 2>/dev/null)`.
       # Do not "simplify" this back to a direct call — see above.
       if conf="$(margay::config_find "$wt" "$primary" 2>/dev/null)"; then
         svcs="$( (margay::config_load "$conf" && printf '%s' "${services:-}") 2>/dev/null )" || svcs=""
