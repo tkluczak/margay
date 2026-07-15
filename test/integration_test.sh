@@ -281,5 +281,16 @@ if [[ "$help_out" == *__complete* ]]; then
   echo "FAIL: __complete leaked into help"; FAILS=$((FAILS+1))
 else echo "ok: __complete is hidden from help"; fi
 
+# --- completion scripts ---
+COMPDIR="$HERE/../completions"
+assert_ok test -f "$COMPDIR/_margay"
+assert_ok test -f "$COMPDIR/margay.bash"
+assert_ok bash -n "$COMPDIR/margay.bash"
+if command -v zsh >/dev/null 2>&1; then
+  assert_ok zsh -n "$COMPDIR/_margay"
+else
+  echo "ok(skip): zsh not installed — skipping _margay syntax check"
+fi
+
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi
