@@ -1,5 +1,19 @@
 # margay `ps`/`ls` + shell completion — Implementation Plan
 
+> **STATUS: EXECUTED on `feat/ps-ls-completion`. Three code snippets below were
+> WRONG and are corrected inline, each marked `CORRECTED`. Do not copy this
+> plan's code as reference without reading those notes — read the shipped code
+> instead. What was wrong:**
+> 1. **Task 3** — guarding `config_load` with `&&` does not stop `set -e` from
+>    aborting on a failing statement *inside* the sourced conf. Broke the
+>    silence contract (rc=1). Needs a subshell.
+> 2. **Task 4** — splitting zsh candidates from flags with `grep '^--'`
+>    misgroups a worktree whose basename starts with `--`. Replaced by an
+>    explicit `kind` field in `__complete`'s output.
+> 3. **Task 5** — `grep -q 'zsh/site-functions'` false-positives on Homebrew's
+>    own `FPATH=".../share/zsh/site-functions:${FPATH}"` line, silently
+>    skipping margay's fpath entry so completion never loads.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `ps`/`ls` aliases and TAB completion of worktree/service names for `margay up` and `margay down`.
@@ -261,11 +275,18 @@ margay::cmd_complete() {
       local wt svcs=""
       wt="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
       # conf is optional here: a conf-less repo still has worktrees to offer.
-      # config_load sources into THIS shell and validates; silence its stderr
-      # and let a bad conf simply mean "no service candidates". Fine to
-      # pollute the shell — this process prints candidates and exits.
+      # CORRECTED — the line below was originally:
+      #   margay::config_load "$conf" >/dev/null 2>&1 && svcs="${services:-}"
+      # which is BROKEN. config_load does `source "$conf"` in the LIVE shell,
+      # and this entrypoint runs under `set -euo pipefail`. The `&&` guards
+      # only config_load's own rc — NOT statements inside the sourced conf. A
+      # conf with any unguarded non-zero command (e.g. a bare `command -v
+      # docker >/dev/null`) aborted the process with rc=1, breaking the
+      # silence contract. The subshell contains the errexit trip; the inner
+      # (...) is also load-bearing, scoping 2>/dev/null over BOTH commands so
+      # config_load's own _cerr output cannot leak to stderr.
       if conf="$(margay::config_find "$wt" "$primary" 2>/dev/null)"; then
-        margay::config_load "$conf" >/dev/null 2>&1 && svcs="${services:-}"
+        svcs="$( (margay::config_load "$conf" && printf '%s' "${services:-}") 2>/dev/null )" || svcs=""
       fi
       printf '%s\n' "$joined" | margay::complete_up_candidates "$svcs"
       printf -- '--fresh\tdrop and recreate the db\n'
@@ -344,16 +365,27 @@ Expected: FAIL on `test -f .../completions/_margay` — the directory does not e
 
 Create `completions/_margay`:
 
+**CORRECTED.** The original `_margay_pairs` + `grep '^--'` split shown here was
+replaced. `__complete` now emits a third `kind` field (`worktree`/`service`/
+`flag`) and the script groups on it, because a `--`-prefixed split misgroups a
+worktree whose directory basename starts with `--` (git constrains branch
+names that way, but not worktree directory basenames). Grouping by kind also
+lets the script call `__complete` **once** per TAB instead of twice — each call
+costs a `git worktree list` plus a per-worktree `jq` pass. Read the shipped
+`completions/_margay` for the real thing; the corrected shape is:
+
 ```zsh
 #compdef margay sandbox
 # zsh completion for margay. Renders `margay __complete` output; computes
 # nothing itself — the targeting grammar lives in margay, not here.
 
-# Turn "candidate<TAB>description" lines into _describe's "candidate:description"
-# pairs. Descriptions may contain ':' (e.g. "api:7100"), which _describe treats
-# as its separator — so escape those before swapping the TAB.
-_margay_pairs() {
-  margay __complete "$1" 2>/dev/null | sed 's/:/\\:/g; s/\t/:/'
+# Turn "candidate<TAB>description<TAB>kind" lines whose kind field matches the
+# awk condition in $2 into _describe's "candidate:description" pairs.
+# Descriptions may contain ':' (e.g. "api:7100"), which _describe treats as its
+# separator — so escape those before swapping the TAB. The kind field is used
+# only for filtering; it is dropped before _describe ever sees it.
+_margay_filter() {
+  awk -F'\t' "$2"' { print $1 "\t" $2 }' <<<"$1" | sed 's/:/\\:/g; s/\t/:/'
 }
 
 _margay() {
@@ -379,15 +411,19 @@ _margay() {
       # $line[1] is the subcommand ($words[1] is 'margay' itself)
       case "$line[1]" in
         up)
-          local -a wts svcs flags
-          wts=("${(@f)$(_margay_pairs up | grep -v $'^--')}")
-          flags=("${(@f)$(_margay_pairs up | grep $'^--')}")
+          local raw
+          raw="$(margay __complete up 2>/dev/null)"
+          local -a wts flags
+          wts=("${(@f)$(_margay_filter "$raw" '$3!="flag"')}")
+          flags=("${(@f)$(_margay_filter "$raw" '$3=="flag"')}")
           _describe -t worktrees 'worktree or service' wts
           _describe -t flags 'flag' flags
           ;;
         down)
+          local rawd
+          rawd="$(margay __complete down 2>/dev/null)"
           local -a dwts
-          dwts=("${(@f)$(_margay_pairs down)}")
+          dwts=("${(@f)$(_margay_filter "$rawd" '1')}")
           _describe -t worktrees 'worktree' dwts
           ;;
       esac
@@ -479,7 +515,12 @@ ln -sf "$HERE/completions/_margay" "$zfunc/_margay"
 echo "✔ symlinked $zfunc/_margay"
 zrc="${ZDOTDIR:-$HOME}/.zshrc"
 if [[ -f "$zrc" ]]; then
-  if ! grep -q 'zsh/site-functions' "$zrc" 2>/dev/null; then
+  # CORRECTED — this guard was originally `grep -q 'zsh/site-functions'`, an
+  # unanchored match over the whole file. Homebrew's documented macOS setup
+  # adds FPATH="$(brew --prefix)/share/zsh/site-functions:${FPATH}", which
+  # contains that substring — so margay's fpath line was silently skipped and
+  # completion never loaded. Match the literal line we ourselves write.
+  if ! grep -qF "fpath=($zfunc \$fpath)" "$zrc" 2>/dev/null; then
     printf '\n# margay completion\nfpath=(%s $fpath)\n' "$zfunc" >> "$zrc"
     echo "✔ added $zfunc to fpath in $zrc"
   fi

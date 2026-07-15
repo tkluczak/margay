@@ -1,8 +1,13 @@
 # margay `ps` / `ls` aliases + shell completion for `up` / `down`
 
-**Status:** Approved, not yet implemented.
+**Status:** Implemented on `feat/ps-ls-completion`.
 **Date:** 2026-07-15
 **Builds on:** worktree targeting for up/down (`docs/worktrees-listing-and-targeting.md`, shipped).
+
+> **Amended during implementation.** Three decisions below changed once the code
+> met reality; each is marked *(amended)* with the reason. The corrected form is
+> what shipped. See `docs/superpowers/plans/2026-07-15-ps-ls-and-completion.md`
+> for the same corrections at the code level.
 
 ## Motivation
 
@@ -24,7 +29,7 @@ Two ergonomic gaps, no new capability:
 | Carousel mechanism | zsh `menu-select` via the standard completion system. TAB opens, ↑↓ cycle, ↵ accepts. No custom ZLE widget, no rebinding of ↑/↓ (they stay history) |
 | Interactive `-i` picker | **not doing.** menu-select covers the ask; an in-terminal picker would add raw-mode/TTY handling and its own test surface for no gain here |
 | Shell coverage | zsh + bash. zsh gets the carousel; bash gets plain TAB candidates. No fish |
-| Candidate source | one hidden subcommand, `margay __complete <up\|down>`, prints `candidate<TAB>description`. Shell scripts render; they never compute |
+| Candidate source | one hidden subcommand, `margay __complete <up\|down>`, prints `candidate<TAB>description<TAB>kind` where kind ∈ `worktree`/`service`/`flag`. Shell scripts render; they never compute. *(amended: the kind field was added during implementation — the original two-field form forced zsh to separate flags from candidates by a leading `--`, which silently misgrouped a worktree whose directory basename starts with `--`. Tagging also lets zsh call `__complete` once per TAB instead of twice.)* |
 | Code placement | candidate derivation lives in `lib/engine.sh` as **pure helpers taking rows on stdin** (unit-testable without git, per the worktrees design); the entrypoint's `cmd_complete` is a thin soft-context wrapper |
 | Naming/visibility | `__complete` (Cobra convention — the `__` marks "not for humans"), omitted from the help usage line, exactly as `conf-json` already is |
 | `down` candidates | only worktrees with **live registry rows**, plus `--all`. Stopping a worktree with nothing running is a no-op; offering it is noise |
@@ -66,6 +71,17 @@ Concretely this means `__complete` **cannot reuse `margay::context`**, which
 calls `die` on both of the first two conditions. It re-derives the context on
 a soft path: `git rev-parse` guarded, `config_find`/`config_load` guarded,
 each failure short-circuiting to a silent `exit 0`.
+
+*(Amended during implementation.)* Guarding `config_load` is subtler than
+"put it on the left of `&&`". `config_load` does `source "$conf"` in the
+**live shell**, and the entrypoint runs under `set -euo pipefail`; the `&&`
+guards only `config_load`'s own return status, not statements running inside
+the sourced conf. A conf containing an ordinary unguarded non-zero command
+(say a bare `command -v docker >/dev/null`) therefore aborted the process
+with `rc=1` — violating this very contract. The load must run in a
+**subshell**, and the `2>/dev/null` must be scoped over the whole
+`config_load && printf` compound so `config_load`'s own error output cannot
+leak either.
 
 ## Implementation sketch
 
