@@ -5,6 +5,8 @@ MARGAY="$HERE/../margay"
 export MARGAY_HOME="$(mktemp -d)"
 FAILS=0
 assert_contains() { if [[ "$1" == *"$2"* ]]; then echo "ok: $3"; else echo "FAIL: $3 — [$1] lacks [$2]"; FAILS=$((FAILS+1)); fi; }
+assert_eq()   { if [[ "$1" == "$2" ]]; then echo "ok: $3"; else echo "FAIL: $3 — expected [$1] got [$2]"; FAILS=$((FAILS+1)); fi; }
+assert_ok()   { if "$@"; then echo "ok: $*"; else echo "FAIL: expected success: $*"; FAILS=$((FAILS+1)); fi; }
 
 REPO="$(mktemp -d)"
 ( cd "$REPO" && git init -q && git commit -q --allow-empty -m init )
@@ -198,6 +200,13 @@ assert_contains "$hook_fail" "warning: service_api_on_up failed" "on_up: failing
 assert_contains "$hook_fail" "api up → http://localhost:7185" "on_up: failing hook does not block the up"
 if [[ "$hook_rc" == 0 ]]; then echo "ok: on_up failure keeps exit 0"; else echo "FAIL: on_up failure changed exit code"; FAILS=$((FAILS+1)); fi
 ( cd "$REPO4" && "$MARGAY" down >/dev/null 2>&1; "$MARGAY" unregister >/dev/null 2>&1 )
+
+# --- ps / ls aliases ---
+assert_eq "$(cd "$REPO" && "$MARGAY" status)" "$(cd "$REPO" && "$MARGAY" ps)" "ps is byte-identical to status"
+assert_eq "$(cd "$REPO" && "$MARGAY" worktrees)" "$(cd "$REPO" && "$MARGAY" ls)" "ls is byte-identical to worktrees"
+help_out="$(cd "$REPO" && "$MARGAY" help)"
+assert_contains "$help_out" "ps" "help mentions ps"
+assert_contains "$help_out" "ls" "help mentions ls"
 
 # --- unregister ---
 unreg="$(cd "$REPO" && "$MARGAY" unregister 2>&1)"

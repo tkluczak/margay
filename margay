@@ -299,13 +299,13 @@ main() {
   case "$cmd" in
     up)       margay::cmd_up "$@" ;;
     down)     margay::cmd_down "$@" ;;
-    status)   margay::cmd_status ;;
-    worktrees) margay::cmd_worktrees ;;
+    status|ps)      margay::cmd_status ;;
+    worktrees|ls)   margay::cmd_worktrees ;;
     unregister) margay::cmd_unregister "$@" ;;
     conf-json) margay::cmd_conf_json ;;
     ui)       margay::cmd_ui "$@" ;;
-    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" ;;
-    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" >&2
+    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | ps (status) | ls (worktrees) | unregister [path|project] | ui [--port N] [--proxy-port N]" ;;
+    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | ps (status) | ls (worktrees) | unregister [path|project] | ui [--port N] [--proxy-port N]" >&2
               echo "margay: unknown subcommand: $cmd" >&2
               exit 1 ;;
   esac
