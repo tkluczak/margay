@@ -25,6 +25,7 @@ Two ergonomic gaps, no new capability:
 | Interactive `-i` picker | **not doing.** menu-select covers the ask; an in-terminal picker would add raw-mode/TTY handling and its own test surface for no gain here |
 | Shell coverage | zsh + bash. zsh gets the carousel; bash gets plain TAB candidates. No fish |
 | Candidate source | one hidden subcommand, `margay __complete <up\|down>`, prints `candidate<TAB>description`. Shell scripts render; they never compute |
+| Code placement | candidate derivation lives in `lib/engine.sh` as **pure helpers taking rows on stdin** (unit-testable without git, per the worktrees design); the entrypoint's `cmd_complete` is a thin soft-context wrapper |
 | Naming/visibility | `__complete` (Cobra convention — the `__` marks "not for humans"), omitted from the help usage line, exactly as `conf-json` already is |
 | `down` candidates | only worktrees with **live registry rows**, plus `--all`. Stopping a worktree with nothing running is a no-op; offering it is noise |
 | Failure behavior | `__complete` **never dies, never writes stderr, always exits 0** — see Silence contract below |
@@ -76,7 +77,8 @@ each failure short-circuiting to a silent `exit 0`.
     - soft context: `git rev-parse --is-inside-work-tree` → else exit 0;
       `PRIMARY="$(margay::primary_worktree)"`.
     - `up`: `git worktree list --porcelain | margay::worktrees_parse |
-      margay::worktrees_join` → emit `basename<TAB>sandbox` (`—` when idle)
+      margay::worktrees_join` → emit `basename<TAB>sandbox` (`-` when idle,
+      as `worktrees_join` already emits ASCII `-`, not an em-dash)
       per row; then `config_find`/`config_load` guarded → emit
       `<svc><TAB>service` for each `$services`. Also the flags
       `--fresh --empty --use`.
@@ -100,15 +102,25 @@ each failure short-circuiting to a silent `exit 0`.
 
 ## Testing
 
-Unit (`test/margay_test.sh`, existing fixture style):
+The two harnesses split by what they can reach: `margay_test.sh` **sources
+`lib/*.sh`** and never runs the entrypoint, so it covers the pure helpers;
+`integration_test.sh` shells out to `$MARGAY` in a real fixture repo, so it
+covers the entrypoint's soft context.
+
+Unit (`test/margay_test.sh`, joined-rows fixtures on stdin):
+
+- `complete_up_candidates` emits worktree basenames **and** declared services;
+  a live worktree carries its `service:port` description, an idle one `-`.
+- `complete_down_candidates` emits only worktrees with live sandboxes, plus
+  `--all`; an idle worktree is absent.
+
+Integration (`test/integration_test.sh`, fake repo + real `$MARGAY`):
 
 - `ps` output is byte-identical to `status`; `ls` to `worktrees`.
-- `__complete up` lists worktree basenames **and** declared services;
-  a worktree with a live sandbox carries its `service:port` description.
-- `__complete down` lists only worktrees with live registry rows, plus
-  `--all`; an idle worktree is absent.
-- Silence contract, one test per path — outside a git repo, and inside a repo
-  with no conf: assert exit 0, empty stdout, **empty stderr**.
+- `__complete up` in the fixture repo lists the worktree and both services.
+- Silence contract, one assertion per path — outside a git repo, and inside a
+  repo with no conf: assert **exit 0, empty stdout, empty stderr**.
+- `__complete` is absent from `margay help` output.
 
 Syntax: `zsh -n completions/_margay`, `bash -n completions/margay.bash` (skip
 the zsh check with a note if zsh is absent from the box).
