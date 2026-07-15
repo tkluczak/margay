@@ -29,7 +29,7 @@ ln -sf "$HERE/completions/_margay" "$zfunc/_margay"
 echo "✔ symlinked $zfunc/_margay"
 zrc="${ZDOTDIR:-$HOME}/.zshrc"
 if [[ -f "$zrc" ]]; then
-  if ! grep -q 'zsh/site-functions' "$zrc" 2>/dev/null; then
+  if ! grep -qF "fpath=($zfunc \$fpath)" "$zrc" 2>/dev/null; then
     printf '\n# margay completion\nfpath=(%s $fpath)\n' "$zfunc" >> "$zrc"
     echo "✔ added $zfunc to fpath in $zrc"
   fi
