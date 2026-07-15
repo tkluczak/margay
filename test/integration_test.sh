@@ -241,6 +241,27 @@ assert_eq "0" "$rc2" "__complete with no conf: exit 0"
 assert_contains "$( (cd "$NOCONF" && "$MARGAY" __complete up) 2>/dev/null )" "$(basename "$NOCONF")" \
   "__complete with no conf still lists worktrees"
 
+# regression: a conf that SOURCES successfully (no syntax error) but contains
+# an unguarded statement that returns non-zero (a bare `false`) used to trip
+# this script's `set -e` mid-source, since config_load sources the conf
+# inline into the caller's shell. That aborted the whole __complete process
+# instead of the mandated rc=0 — only the *service* candidates should be
+# lost, worktree candidates must still print.
+FAILCONF="$(mktemp -d)"
+( cd "$FAILCONF" && git init -q && git commit -q --allow-empty -m init )
+cat > "$FAILCONF/.margay.conf" <<'EOF'
+project="failsvc"
+services="api"
+service_api_ports="7170-7174"
+service_api_start() { exec sleep 300; }
+false
+EOF
+errF="$( (cd "$FAILCONF" && "$MARGAY" __complete up) 2>&1 1>/dev/null )"; rcF=$?
+assert_eq "" "$errF" "__complete with a conf failing statement: silent stderr"
+assert_eq "0" "$rcF" "__complete with a conf failing statement: exit 0"
+assert_contains "$( (cd "$FAILCONF" && "$MARGAY" __complete up) 2>/dev/null )" "$(basename "$FAILCONF")" \
+  "__complete with a conf failing statement still lists worktree candidates"
+
 if [[ "$help_out" == *__complete* ]]; then
   echo "FAIL: __complete leaked into help"; FAILS=$((FAILS+1))
 else echo "ok: __complete is hidden from help"; fi

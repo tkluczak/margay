@@ -271,11 +271,22 @@ margay::cmd_complete() {
       local wt svcs=""
       wt="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
       # conf is optional here: a conf-less repo still has worktrees to offer.
-      # config_load sources into THIS shell and validates; silence its stderr
-      # and let a bad conf simply mean "no service candidates". Fine to
-      # pollute the shell — this process prints candidates and exits.
+      # config_load does `source "$1"` INLINE into the calling shell, and
+      # this script runs under `set -euo pipefail`. Calling it directly —
+      # even as `margay::config_load "$conf" && ...` — only guards
+      # config_load's OWN return status; it does NOT guard statements
+      # *inside* the sourced conf file. A conf that sources cleanly but
+      # contains any unguarded non-zero statement (a bare `false`, a
+      # `command -v docker` sanity check, etc.) trips errexit mid-source and
+      # kills this whole process, breaking the silence contract (rc must
+      # always be 0). Running the load in a subshell fixes this: errexit
+      # firing in there only exits the subshell, so the parent survives —
+      # we just lose the service candidates for this call, which is
+      # acceptable (worktree candidates are unaffected). Also silences
+      # config_load's own stderr (_cerr writes there on validation failure).
+      # Do not "simplify" this back to a direct call — see above.
       if conf="$(margay::config_find "$wt" "$primary" 2>/dev/null)"; then
-        margay::config_load "$conf" >/dev/null 2>&1 && svcs="${services:-}"
+        svcs="$( (margay::config_load "$conf" && printf '%s' "${services:-}") 2>/dev/null )" || svcs=""
       fi
       printf '%s\n' "$joined" | margay::complete_up_candidates "$svcs"
       printf -- '--fresh\tdrop and recreate the db\n'
