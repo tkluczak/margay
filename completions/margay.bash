@@ -3,7 +3,7 @@
 # shellcheck shell=bash
 
 _margay_bash() {
-  local cur prev cands
+  local cur cands
   cur="${COMP_WORDS[COMP_CWORD]}"
 
   if (( COMP_CWORD == 1 )); then

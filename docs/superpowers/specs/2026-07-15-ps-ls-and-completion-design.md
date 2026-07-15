@@ -55,7 +55,7 @@ non-human caller.
 ```
 margay up <TAB>
   → _margay (zsh) / _margay_bash (bash)
-      → margay __complete up        → candidate<TAB>description lines
+      → margay __complete up        → candidate<TAB>description<TAB>kind lines
   → zsh:  _describe → menu-select carousel (↑↓ cycle, ↵ accept)
     bash: compgen -W → plain candidate list
 ```
@@ -65,7 +65,11 @@ margay up <TAB>
 A completion helper that writes to stderr or exits non-zero turns a TAB
 press into garbage on the user's prompt. Therefore every failure path in
 `__complete` — outside a git repo, no `.margay.conf` for this repo,
-unreadable/absent registry — prints nothing and exits 0.
+unreadable/absent registry — always exits 0 with silent stderr. Stdout is not
+universally empty, though: outside a git repo there are no candidates at all,
+but a repo with no conf (or a conf that fails to load/validate) still prints
+its worktree candidates — only the service candidates are lost. "Silent
+failure" means "never garbage on the prompt," not "never any candidates."
 
 Concretely this means `__complete` **cannot reuse `margay::context`**, which
 calls `die` on both of the first two conditions. It re-derives the context on
@@ -93,18 +97,22 @@ leak either.
     - soft context: `git rev-parse --is-inside-work-tree` → else exit 0;
       `PRIMARY="$(margay::primary_worktree)"`.
     - `up`: `git worktree list --porcelain | margay::worktrees_parse |
-      margay::worktrees_join` → emit `basename<TAB>sandbox` (`-` when idle,
-      as `worktrees_join` already emits ASCII `-`, not an em-dash)
+      margay::worktrees_join` → emit `basename<TAB>sandbox<TAB>worktree` (`-`
+      when idle, as `worktrees_join` already emits ASCII `-`, not an em-dash)
       per row; then `config_find`/`config_load` guarded → emit
-      `<svc><TAB>service` for each `$services`. Also the flags
-      `--fresh --empty --use`.
-    - `down`: same join, filtered to rows with a non-empty sandbox column;
-      plus `--all<TAB>every sandbox everywhere`.
+      `<svc><TAB>service<TAB>service` for each `$services`. Also the flags,
+      each tagged `<TAB>flag`: `--fresh --empty --use`.
+    - `down`: same join, filtered to rows with a non-empty sandbox column,
+      each tagged `<TAB>worktree`; plus
+      `--all<TAB>every sandbox everywhere<TAB>flag`.
 - `completions/_margay` (zsh): `#compdef margay`; `_arguments -C` with
   `':command:->cmd' '*::arg:->args'`, dispatching on `$line[1]` (the
   subcommand — note `$words[1]` is `margay` itself) to per-command
-  `_describe` calls fed by `margay __complete "$line[1]"`. Two `_describe` groups for `up`
-  (`worktrees`, `services`) so zsh shows group headings in the menu.
+  `_describe` calls fed by `margay __complete "$line[1]"`. For `up`, two
+  `_describe` groups: worktrees and services **merged** under one heading
+  (`worktree or service`), split out from a second group of `flags` — both
+  filtered from the same `kind`-tagged output by `_margay_filter`, so zsh
+  shows one group heading for candidates and one for flags in the menu.
   Requires `zmodload zsh/complist` + `zstyle ':completion:*' menu select`
   for the carousel; install.sh adds the zstyle only if the user has no
   `menu select` style already set.
@@ -135,7 +143,10 @@ Integration (`test/integration_test.sh`, fake repo + real `$MARGAY`):
 - `ps` output is byte-identical to `status`; `ls` to `worktrees`.
 - `__complete up` in the fixture repo lists the worktree and both services.
 - Silence contract, one assertion per path — outside a git repo, and inside a
-  repo with no conf: assert **exit 0, empty stdout, empty stderr**.
+  repo with no conf: assert **exit 0, empty stderr** always; stdout is empty
+  only outside a git repo — a repo with no conf (or a conf that fails to
+  load/source/validate) still lists its worktree candidates, just no
+  services.
 - `__complete` is absent from `margay help` output.
 
 Syntax: `zsh -n completions/_margay`, `bash -n completions/margay.bash` (skip

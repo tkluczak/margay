@@ -1,16 +1,20 @@
 # margay `ps`/`ls` + shell completion — Implementation Plan
 
-> **STATUS: EXECUTED on `feat/ps-ls-completion`. Three code snippets below were
+> **STATUS: EXECUTED on `feat/ps-ls-completion`. Four code snippets below were
 > WRONG and are corrected inline, each marked `CORRECTED`. Do not copy this
 > plan's code as reference without reading those notes — read the shipped code
 > instead. What was wrong:**
-> 1. **Task 3** — guarding `config_load` with `&&` does not stop `set -e` from
+> 1. **Task 1** — `margay::complete_up_candidates` / `complete_down_candidates`
+>    originally emitted the two-field `candidate<TAB>description`. Shipped
+>    code adds a third `kind` field (`worktree`/`service`/`flag`) to every row,
+>    for the same reason as point 2 below.
+> 2. **Task 3** — guarding `config_load` with `&&` does not stop `set -e` from
 >    aborting on a failing statement *inside* the sourced conf. Broke the
 >    silence contract (rc=1). Needs a subshell.
-> 2. **Task 4** — splitting zsh candidates from flags with `grep '^--'`
+> 3. **Task 4** — splitting zsh candidates from flags with `grep '^--'`
 >    misgroups a worktree whose basename starts with `--`. Replaced by an
 >    explicit `kind` field in `__complete`'s output.
-> 3. **Task 5** — `grep -q 'zsh/site-functions'` false-positives on Homebrew's
+> 4. **Task 5** — `grep -q 'zsh/site-functions'` false-positives on Homebrew's
 >    own `FPATH=".../share/zsh/site-functions:${FPATH}"` line, silently
 >    skipping margay's fpath entry so completion never loads.
 
@@ -45,8 +49,8 @@
 **Interfaces:**
 - Consumes: `margay::worktrees_join` output format — `path<TAB>branch<TAB>sandbox<TAB>db`, one row per worktree, `-` when idle.
 - Produces:
-  - `margay::complete_up_candidates <services>` — joined rows on **stdin**, space-separated service list as **$1**. Emits `candidate<TAB>description` lines: one per worktree (basename, description = sandbox column), then one per service (name, description = literal `service`). Always rc 0.
-  - `margay::complete_down_candidates` — joined rows on **stdin**, no args. Emits `candidate<TAB>description` for worktrees whose sandbox column is not `-`, then `--all<TAB>every sandbox everywhere`. Always rc 0.
+  - `margay::complete_up_candidates <services>` — joined rows on **stdin**, space-separated service list as **$1**. Emits `candidate<TAB>description<TAB>kind` lines: one per worktree (basename, description = sandbox column, kind `worktree`), then one per service (name, description = literal `service`, kind `service`). Always rc 0. *(CORRECTED — see status note above: the third `kind` field was added during implementation.)*
+  - `margay::complete_down_candidates` — joined rows on **stdin**, no args. Emits `candidate<TAB>description<TAB>kind` for worktrees whose sandbox column is not `-` (kind `worktree`), then `--all<TAB>every sandbox everywhere<TAB>flag`. Always rc 0.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -85,32 +89,41 @@ Expected: FAIL lines mentioning `complete_up_candidates` / `complete_down_candid
 
 Append to `lib/engine.sh`, directly after the closing `}` of `margay::worktrees_join`:
 
+**CORRECTED** — see status note above, point 1. The snippet as originally
+drafted here emitted the two-field `candidate<TAB>description`. Shipped
+`lib/engine.sh` tags every row with a third `kind` field instead, for the
+same reason Task 4's zsh script needed one: grouping/filtering by an explicit
+field is unambiguous, where a leading `--` is not (a worktree's directory
+basename can itself start with `--`). The corrected shape:
+
 ```bash
 # Completion candidates for `up`: worktrees (by basename, described by their
 # live sandbox) then declared services. Joined rows on stdin, services in $1.
-# Emits "candidate<TAB>description". Pure: no git, no registry, never fails.
+# Emits "candidate<TAB>description<TAB>kind". Pure: no git, no registry, never fails.
 margay::complete_up_candidates() {
   local services="${1:-}" path branch sandbox db svc
   while IFS=$'\t' read -r path branch sandbox db; do
     [[ -z "$path" ]] && continue
-    printf '%s\t%s\n' "${path##*/}" "$sandbox"
+    printf '%s\t%s\tworktree\n' "${path##*/}" "$sandbox"
   done
   for svc in $services; do
-    printf '%s\tservice\n' "$svc"
+    printf '%s\tservice\tservice\n' "$svc"
   done
   return 0
 }
 
 # Completion candidates for `down`: only worktrees that actually have a live
 # sandbox (stopping an idle one is a no-op), plus --all. Joined rows on stdin.
+# Emits "candidate<TAB>description<TAB>kind"; worktree rows get kind
+# "worktree", the --all line gets kind "flag".
 margay::complete_down_candidates() {
   local path branch sandbox db
   while IFS=$'\t' read -r path branch sandbox db; do
     [[ -z "$path" ]] && continue
     [[ "$sandbox" == "-" ]] && continue
-    printf '%s\t%s\n' "${path##*/}" "$sandbox"
+    printf '%s\t%s\tworktree\n' "${path##*/}" "$sandbox"
   done
-  printf -- '--all\tevery sandbox everywhere\n'
+  printf -- '--all\tevery sandbox everywhere\tflag\n'
   return 0
 }
 ```
@@ -210,7 +223,7 @@ git commit -m "feat(cli): ps and ls aliases for status and worktrees"
 
 **Interfaces:**
 - Consumes: `margay::complete_up_candidates` / `margay::complete_down_candidates` (Task 1); `margay::primary_worktree`, `margay::worktrees_parse`, `margay::worktrees_join`, `margay::config_find`, `margay::config_load` (existing).
-- Produces: `margay __complete <up|down>` printing `candidate<TAB>description` lines. Consumed by Task 4's shell scripts.
+- Produces: `margay __complete <up|down>` printing `candidate<TAB>description<TAB>kind` lines. Consumed by Task 4's shell scripts.
 
 **Why this cannot reuse `margay::context`:** `context` calls `die` when outside a git repo or when no conf is found, which writes to stderr and exits 1 — violating the Global Constraints silence contract. `cmd_complete` re-derives the same context with every failure short-circuiting to a silent `return 0`. It also skips `context`'s `env_file` sourcing and `projects_learn` write, both of which are side effects a TAB press must not cause.
 
@@ -222,8 +235,8 @@ Append to `test/integration_test.sh`, after the Task 2 block:
 # --- __complete ---
 cmpl="$(cd "$REPO" && "$MARGAY" __complete up 2>/dev/null)"
 assert_contains "$cmpl" "wt-b" "__complete up lists the worktree basename"
-assert_contains "$cmpl" "$(printf 'api\tservice')" "__complete up lists api as a service"
-assert_contains "$cmpl" "$(printf 'ui\tservice')" "__complete up lists ui as a service"
+assert_contains "$cmpl" "$(printf 'api\tservice\tservice')" "__complete up lists api as a service"
+assert_contains "$cmpl" "$(printf 'ui\tservice\tservice')" "__complete up lists ui as a service"
 dcmpl="$(cd "$REPO" && "$MARGAY" __complete down 2>/dev/null)"
 assert_contains "$dcmpl" "--all" "__complete down offers --all"
 
@@ -334,7 +347,7 @@ git commit -m "feat(cli): hidden __complete subcommand for shell completion"
 - Test: `test/integration_test.sh` (append after the Task 3 block)
 
 **Interfaces:**
-- Consumes: `margay __complete <up|down>` (Task 3), emitting `candidate<TAB>description`.
+- Consumes: `margay __complete <up|down>` (Task 3), emitting `candidate<TAB>description<TAB>kind`.
 - Produces: two files for Task 5's `install.sh` to wire up.
 
 **zsh note:** `$words[1]` is `margay` itself, **not** the subcommand — the subcommand is `$line[1]` under `_arguments -C`. `_describe` wants `name:description` pairs, so the TAB in `__complete`'s output is translated to `:`, and any literal `:` in a description is escaped first (`_describe` treats `:` as its separator).

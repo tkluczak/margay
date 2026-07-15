@@ -36,7 +36,7 @@ alone. Add `zmodload zsh/complist; zstyle ':completion:*' menu select` to opt in
 ## Usage
 
 ```
-usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees
+usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | ps (status) | ls (worktrees) | unregister [path|project] | ui [--port N] [--proxy-port N]
 ```
 
 From inside any worktree of a configured repo:
