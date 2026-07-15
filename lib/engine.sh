@@ -253,3 +253,31 @@ margay::worktrees_join() {
     printf '%s\t%s\t%s\t%s\n' "$path" "$branch" "${sandbox:--}" "${db:--}"
   done
 }
+
+# Completion candidates for `up`: worktrees (by basename, described by their
+# live sandbox) then declared services. Joined rows on stdin, services in $1.
+# Emits "candidate<TAB>description". Pure: no git, no registry, never fails.
+margay::complete_up_candidates() {
+  local services="${1:-}" path branch sandbox db svc
+  while IFS=$'\t' read -r path branch sandbox db; do
+    [[ -z "$path" ]] && continue
+    printf '%s\t%s\n' "${path##*/}" "$sandbox"
+  done
+  for svc in $services; do
+    printf '%s\tservice\n' "$svc"
+  done
+  return 0
+}
+
+# Completion candidates for `down`: only worktrees that actually have a live
+# sandbox (stopping an idle one is a no-op), plus --all. Joined rows on stdin.
+margay::complete_down_candidates() {
+  local path branch sandbox db
+  while IFS=$'\t' read -r path branch sandbox db; do
+    [[ -z "$path" ]] && continue
+    [[ "$sandbox" == "-" ]] && continue
+    printf '%s\t%s\n' "${path##*/}" "$sandbox"
+  done
+  printf -- '--all\tevery sandbox everywhere\n'
+  return 0
+}
