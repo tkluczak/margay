@@ -254,6 +254,55 @@ margay::cmd_worktrees() {
   done
 }
 
+# Hidden completion helper — consumed by completions/_margay and
+# completions/margay.bash, never by humans (kept out of the usage line).
+# Silence contract: ALWAYS exit 0, never write stderr, print nothing on any
+# failure path — a completion helper that errors dumps garbage on the user's
+# prompt. Hence the soft context: no margay::context (it calls die), no
+# env_file sourcing, no projects_learn.
+margay::cmd_complete() {
+  local what="${1:-}" rows joined conf primary
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  primary="$(margay::primary_worktree 2>/dev/null)" || return 0
+  rows="$(git worktree list --porcelain 2>/dev/null)" || return 0
+  joined="$(printf '%s\n' "$rows" | margay::worktrees_parse | margay::worktrees_join 2>/dev/null)" || return 0
+  case "$what" in
+    up)
+      local wt svcs=""
+      wt="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+      # conf is optional here: a conf-less repo still has worktrees to offer.
+      # config_load does `source "$1"` INLINE into the calling shell, and
+      # this script runs under `set -euo pipefail`. Calling it directly —
+      # even as `margay::config_load "$conf" && ...` — only guards
+      # config_load's OWN return status; it does NOT guard statements
+      # *inside* the sourced conf file. A conf that sources cleanly but
+      # contains any unguarded non-zero statement (a bare `false`, a
+      # `command -v docker` sanity check, etc.) trips errexit mid-source and
+      # kills this whole process, breaking the silence contract (rc must
+      # always be 0). Running the load in a subshell fixes this: errexit
+      # firing in there only exits the subshell, so the parent survives —
+      # we just lose the service candidates for this call, which is
+      # acceptable (worktree candidates are unaffected). Also silences
+      # config_load's own stderr (_cerr writes there on validation failure).
+      # The inner `(...)` also scopes `2>/dev/null` over both `config_load` and
+      # `printf` as one unit — `config_load`'s own `_cerr` output would otherwise
+      # leak past a bare `$(cmd1 && cmd2 2>/dev/null)`.
+      # Do not "simplify" this back to a direct call — see above.
+      if conf="$(margay::config_find "$wt" "$primary" 2>/dev/null)"; then
+        svcs="$( (margay::config_load "$conf" && printf '%s' "${services:-}") 2>/dev/null )" || svcs=""
+      fi
+      printf '%s\n' "$joined" | margay::complete_up_candidates "$svcs"
+      printf -- '--fresh\tdrop and recreate the db\tflag\n'
+      printf -- '--empty\tcreate the db without seeding\tflag\n'
+      printf -- '--use\tNAME=PORT|URL|none — override a dependency\tflag\n'
+      ;;
+    down)
+      printf '%s\n' "$joined" | margay::complete_down_candidates
+      ;;
+  esac
+  return 0
+}
+
 margay::cmd_unregister() {
   local q="${1:-}"
   if [[ -z "$q" ]]; then
@@ -299,13 +348,14 @@ main() {
   case "$cmd" in
     up)       margay::cmd_up "$@" ;;
     down)     margay::cmd_down "$@" ;;
-    status)   margay::cmd_status ;;
-    worktrees) margay::cmd_worktrees ;;
+    status|ps)      margay::cmd_status ;;
+    worktrees|ls)   margay::cmd_worktrees ;;
     unregister) margay::cmd_unregister "$@" ;;
     conf-json) margay::cmd_conf_json ;;
+    __complete) margay::cmd_complete "$@" ;;
     ui)       margay::cmd_ui "$@" ;;
-    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" ;;
-    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees | unregister [path|project] | ui [--port N] [--proxy-port N]" >&2
+    help)     echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | ps (status) | ls (worktrees) | unregister [path|project] | ui [--port N] [--proxy-port N]" ;;
+    *)        echo "usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | ps (status) | ls (worktrees) | unregister [path|project] | ui [--port N] [--proxy-port N]" >&2
               echo "margay: unknown subcommand: $cmd" >&2
               exit 1 ;;
   esac

@@ -22,6 +22,34 @@ case ":$PATH:" in
   *) echo "! ~/.local/bin is not on PATH — add:  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
 esac
 
+# Shell completion. zsh gets a menu-select carousel; bash gets plain TAB.
+zfunc="$HOME/.local/share/zsh/site-functions"
+mkdir -p "$zfunc"
+ln -sf "$HERE/completions/_margay" "$zfunc/_margay"
+echo "✔ symlinked $zfunc/_margay"
+zrc="${ZDOTDIR:-$HOME}/.zshrc"
+if [[ -f "$zrc" ]]; then
+  if ! grep -qF "fpath=($zfunc \$fpath)" "$zrc" 2>/dev/null; then
+    printf '\n# margay completion\nfpath=(%s $fpath)\n' "$zfunc" >> "$zrc"
+    echo "✔ added $zfunc to fpath in $zrc"
+  fi
+  # The carousel needs complist + the menu-select style. Never clobber a
+  # user's existing menu style — only add one if they have none.
+  if ! grep -q "zstyle ':completion:\*' menu" "$zrc" 2>/dev/null; then
+    printf "zmodload zsh/complist\nzstyle ':completion:*' menu select\n" >> "$zrc"
+    echo "✔ enabled zsh menu-select (arrow-key carousel) in $zrc"
+  else
+    echo "! $zrc already sets a completion menu style — leaving it alone"
+  fi
+  echo "  restart zsh (or: exec zsh) to pick up completion"
+fi
+brc="$HOME/.bashrc"
+if [[ -f "$brc" ]] && ! grep -q 'completions/margay.bash' "$brc" 2>/dev/null; then
+  printf '\n# margay completion\n[ -f "%s" ] && source "%s"\n' \
+    "$HERE/completions/margay.bash" "$HERE/completions/margay.bash" >> "$brc"
+  echo "✔ sourced margay bash completion from $brc"
+fi
+
 # Migrate from the old ~/bin location: drop stale symlinks that point at this repo.
 for old in "$HOME/bin/margay" "$HOME/bin/sandbox"; do
   if [[ -L "$old" && "$(readlink "$old")" == "$HERE/margay" ]]; then

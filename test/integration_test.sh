@@ -5,6 +5,8 @@ MARGAY="$HERE/../margay"
 export MARGAY_HOME="$(mktemp -d)"
 FAILS=0
 assert_contains() { if [[ "$1" == *"$2"* ]]; then echo "ok: $3"; else echo "FAIL: $3 — [$1] lacks [$2]"; FAILS=$((FAILS+1)); fi; }
+assert_eq()   { if [[ "$1" == "$2" ]]; then echo "ok: $3"; else echo "FAIL: $3 — expected [$1] got [$2]"; FAILS=$((FAILS+1)); fi; }
+assert_ok()   { if "$@"; then echo "ok: $*"; else echo "FAIL: expected success: $*"; FAILS=$((FAILS+1)); fi; }
 
 REPO="$(mktemp -d)"
 ( cd "$REPO" && git init -q && git commit -q --allow-empty -m init )
@@ -199,6 +201,13 @@ assert_contains "$hook_fail" "api up → http://localhost:7185" "on_up: failing 
 if [[ "$hook_rc" == 0 ]]; then echo "ok: on_up failure keeps exit 0"; else echo "FAIL: on_up failure changed exit code"; FAILS=$((FAILS+1)); fi
 ( cd "$REPO4" && "$MARGAY" down >/dev/null 2>&1; "$MARGAY" unregister >/dev/null 2>&1 )
 
+# --- ps / ls aliases ---
+assert_eq "$(cd "$REPO" && "$MARGAY" status)" "$(cd "$REPO" && "$MARGAY" ps)" "ps is byte-identical to status"
+assert_eq "$(cd "$REPO" && "$MARGAY" worktrees)" "$(cd "$REPO" && "$MARGAY" ls)" "ls is byte-identical to worktrees"
+help_out="$(cd "$REPO" && "$MARGAY" help)"
+assert_contains "$help_out" "ps" "help mentions ps"
+assert_contains "$help_out" "ls" "help mentions ls"
+
 # --- unregister ---
 unreg="$(cd "$REPO" && "$MARGAY" unregister 2>&1)"
 assert_contains "$unreg" "unregistered" "unregister (no arg) removes current repo"
@@ -207,6 +216,85 @@ assert_contains "$(jq 'length' "$MARGAY_HOME/projects.json")" "1" "projects.json
 bad="$("$MARGAY" unregister nothing-here 2>&1)" \
   && { echo "FAIL: unregister miss should fail"; FAILS=$((FAILS+1)); } || true
 assert_contains "$bad" "no registered project matches" "unregister miss error"
+
+# --- __complete ---
+# three-field contract: candidate<TAB>description<TAB>kind
+cmpl="$(cd "$REPO" && "$MARGAY" __complete up 2>/dev/null)"
+assert_contains "$cmpl" "wt-b" "__complete up lists the worktree basename"
+assert_contains "$cmpl" "$(printf 'wt-b\t')" "__complete up worktree row has a description field"
+assert_contains "$cmpl" "$(printf '\tworktree')" "__complete up worktree row is tagged kind=worktree"
+assert_contains "$cmpl" "$(printf 'api\tservice\tservice')" "__complete up lists api as a service, kind=service"
+assert_contains "$cmpl" "$(printf 'ui\tservice\tservice')" "__complete up lists ui as a service, kind=service"
+assert_contains "$cmpl" "$(printf -- '--fresh\tdrop and recreate the db\tflag')" "__complete up --fresh is tagged kind=flag"
+dcmpl="$(cd "$REPO" && "$MARGAY" __complete down 2>/dev/null)"
+assert_contains "$dcmpl" "$(printf -- '--all\tevery sandbox everywhere\tflag')" "__complete down offers --all tagged kind=flag"
+
+# silence contract: exit 0, empty stdout, empty stderr on every failure path
+NOGIT="$(mktemp -d)"
+err="$( (cd "$NOGIT" && "$MARGAY" __complete up) 2>&1 1>/dev/null )"; rc=$?
+assert_eq "" "$err" "__complete outside a git repo: silent stderr"
+assert_eq "0" "$rc" "__complete outside a git repo: exit 0"
+assert_eq "" "$( (cd "$NOGIT" && "$MARGAY" __complete up) 2>/dev/null )" "__complete outside a git repo: empty stdout"
+
+NOCONF="$(mktemp -d)"
+( cd "$NOCONF" && git init -q && git commit -q --allow-empty -m init )
+err2="$( (cd "$NOCONF" && "$MARGAY" __complete up) 2>&1 1>/dev/null )"; rc2=$?
+assert_eq "" "$err2" "__complete with no conf: silent stderr"
+assert_eq "0" "$rc2" "__complete with no conf: exit 0"
+# a conf-less repo still has worktrees to offer, just no services
+assert_contains "$( (cd "$NOCONF" && "$MARGAY" __complete up) 2>/dev/null )" "$(basename "$NOCONF")" \
+  "__complete with no conf still lists worktrees"
+
+# regression: a conf that SOURCES successfully (no syntax error) but contains
+# an unguarded statement that returns non-zero (a bare `false`) used to trip
+# this script's `set -e` mid-source, since config_load sources the conf
+# inline into the caller's shell. That aborted the whole __complete process
+# instead of the mandated rc=0 — only the *service* candidates should be
+# lost, worktree candidates must still print.
+FAILCONF="$(mktemp -d)"
+( cd "$FAILCONF" && git init -q && git commit -q --allow-empty -m init )
+cat > "$FAILCONF/.margay.conf" <<'EOF'
+project="failsvc"
+services="api"
+service_api_ports="7170-7174"
+service_api_start() { exec sleep 300; }
+false
+EOF
+errF="$( (cd "$FAILCONF" && "$MARGAY" __complete up) 2>&1 1>/dev/null )"; rcF=$?
+assert_eq "" "$errF" "__complete with a conf failing statement: silent stderr"
+assert_eq "0" "$rcF" "__complete with a conf failing statement: exit 0"
+assert_contains "$( (cd "$FAILCONF" && "$MARGAY" __complete up) 2>/dev/null )" "$(basename "$FAILCONF")" \
+  "__complete with a conf failing statement still lists worktree candidates"
+
+# regression: a conf that SOURCES CLEANLY (no syntax error, no failing statements)
+# but FAILS VALIDATION (e.g., sets project but no services) — config_load's _cerr
+# writes to stderr, and the silence contract requires those writes be captured
+# by the inner (...) subshell's 2>/dev/null, not leaked by a bare $(... 2>/dev/null).
+FAILVAL="$(mktemp -d)"
+( cd "$FAILVAL" && git init -q && git commit -q --allow-empty -m init )
+cat > "$FAILVAL/.margay.conf" <<'EOF'
+project="badconf"
+EOF
+errV="$( (cd "$FAILVAL" && "$MARGAY" __complete up) 2>&1 1>/dev/null )"; rcV=$?
+assert_eq "" "$errV" "__complete with conf failing validation: silent stderr"
+assert_eq "0" "$rcV" "__complete with conf failing validation: exit 0"
+assert_contains "$( (cd "$FAILVAL" && "$MARGAY" __complete up) 2>/dev/null )" "$(basename "$FAILVAL")" \
+  "__complete with conf failing validation still lists worktree candidates"
+
+if [[ "$help_out" == *__complete* ]]; then
+  echo "FAIL: __complete leaked into help"; FAILS=$((FAILS+1))
+else echo "ok: __complete is hidden from help"; fi
+
+# --- completion scripts ---
+COMPDIR="$HERE/../completions"
+assert_ok test -f "$COMPDIR/_margay"
+assert_ok test -f "$COMPDIR/margay.bash"
+assert_ok bash -n "$COMPDIR/margay.bash"
+if command -v zsh >/dev/null 2>&1; then
+  assert_ok zsh -n "$COMPDIR/_margay"
+else
+  echo "ok(skip): zsh not installed — skipping _margay syntax check"
+fi
 
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi

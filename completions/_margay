@@ -1,0 +1,80 @@
+#compdef margay sandbox
+# zsh completion for margay. Renders `margay __complete` output; computes
+# nothing itself — the targeting grammar lives in margay, not here.
+
+# Turn "candidate<TAB>description<TAB>kind" lines whose kind field matches
+# the awk condition in $2 into _describe's "candidate:description" pairs.
+# Descriptions may contain ':' (e.g. "api:7100"), which _describe treats as
+# its separator — so escape those before swapping the TAB. The kind field is
+# used only for filtering here; it is dropped before _describe ever sees it.
+_margay_filter() {
+  [[ -n "$1" ]] || return 0
+  awk -F'\t' "$2"' { print $1 "\t" $2 }' <<<"$1" | sed 's/:/\\:/g; s/\t/:/'
+}
+
+# Split _margay_filter's output into an array via the zsh completion-system
+# $reply convention. This guard belongs here, not just inside _margay_filter:
+# zsh's quoted "${(@f)s}" splits a string on newlines, and a string with zero
+# newlines — including an EMPTY one — is still one field, so "${(@f)""}"
+# yields a one-element array holding an empty string, not a zero-element
+# array. Without this check, _describe would still be handed a bogus blank
+# candidate on __complete's silence even though _margay_filter printed
+# nothing.
+_margay_split() {
+  local out
+  out="$(_margay_filter "$1" "$2")"
+  if [[ -n "$out" ]]; then
+    reply=("${(@f)out}")
+  else
+    reply=()
+  fi
+}
+
+_margay() {
+  local -a cmds
+  cmds=(
+    'up:start a sandbox'
+    'down:stop a sandbox'
+    'ps:running sandboxes (alias of status)'
+    'ls:worktrees and their sandboxes (alias of worktrees)'
+    'status:running sandboxes'
+    'worktrees:worktrees and their sandboxes'
+    'unregister:forget a project'
+    'ui:web control panel'
+    'help:usage'
+  )
+
+  local curcontext="$curcontext" state line
+  _arguments -C ':command:->cmd' '*::arg:->args' && return 0
+
+  case "$state" in
+    cmd) _describe -t commands 'margay command' cmds ;;
+    args)
+      # $line[1] is the subcommand ($words[1] is 'margay' itself)
+      case "$line[1]" in
+        up)
+          # One call, cached — the old grep-by-'--'-prefix split misgrouped
+          # any worktree whose basename itself starts with '--'; grouping by
+          # the explicit kind field is unambiguous and avoids a second
+          # __complete invocation (and its git+jq cost) per TAB press.
+          local raw
+          raw="$(margay __complete up 2>/dev/null)"
+          local -a wts flags reply
+          _margay_split "$raw" '$3!="flag"'; wts=("${reply[@]}")
+          _margay_split "$raw" '$3=="flag"'; flags=("${reply[@]}")
+          _describe -t worktrees 'worktree or service' wts
+          _describe -t flags 'flag' flags
+          ;;
+        down)
+          local rawd
+          rawd="$(margay __complete down 2>/dev/null)"
+          local -a dwts reply
+          _margay_split "$rawd" '1'; dwts=("${reply[@]}")
+          _describe -t worktrees 'worktree' dwts
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_margay "$@"

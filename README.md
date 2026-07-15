@@ -22,10 +22,21 @@ bash ~/Projects/tools/margay/install.sh   # symlinks ~/.local/bin/margay, guards
 Then drop a machine-local `.margay.conf` (see `examples/`) into each project
 repo's primary checkout. Updates: `git pull` — nothing to rebuild.
 
+### Tab completion
+
+`install.sh` wires up completion for both zsh and bash. In zsh, `margay up <TAB>`
+opens a carousel of this repo's worktrees (with their live `service:port`s) and
+declared services — arrow keys cycle it, Enter accepts. `margay down <TAB>` offers
+only worktrees that actually have something running, plus `--all`.
+
+Restart your shell after installing. If the list appears but arrows don't move a
+highlight, your `.zshrc` sets its own completion menu style — margay leaves that
+alone. Add `zmodload zsh/complist; zstyle ':completion:*' menu select` to opt in.
+
 ## Usage
 
 ```
-usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | status | worktrees
+usage: margay up [worktree] [service ...] [--use NAME=PORT|URL|none] [--fresh|--empty] | down [worktree|--all] | ps (status) | ls (worktrees) | unregister [path|project] | ui [--port N] [--proxy-port N]
 ```
 
 From inside any worktree of a configured repo:
@@ -45,7 +56,9 @@ margay up feat-payments        # target another worktree by branch or dirname
 margay up feat-payments web    # one service in that worktree
 
 margay status              # everything margay is running, across all projects
+margay ps                  # alias for status
 margay worktrees           # this repo's worktrees + their live sandboxes/DBs
+margay ls                  # alias for worktrees
 margay down                # stop the current worktree's sandboxes
 margay down feat-payments  # stop another worktree's
 margay down --all          # stop everything margay started
