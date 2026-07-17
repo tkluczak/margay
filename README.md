@@ -88,9 +88,12 @@ While the UI runs it also serves a reverse proxy on port 80 (override with
 `--proxy-port`), giving every sandbox a stable address instead of a port:
 `http://<worktree>.<project>.localhost/` (the primary checkout is
 `http://<project>.localhost/`; individual services at
-`http://<service>.<worktree>.<project>.localhost/`). WebSockets are
+`http://<service>.<worktree>.<project>.localhost/`). The control panel itself
+is reachable at `http://margay.localhost/` through the same proxy
+(or `http://margay.localhost:N/` with `--proxy-port N`). WebSockets are
 proxied, so HMR and realtime features work. If port 80 is taken the UI
-falls back to plain `localhost:<port>` links. On macOS the proxy binds the
+falls back to plain `localhost:<port>` links (both sandboxes and the control
+panel; startup advertises which URL to use). On macOS the proxy binds the
 wildcard address (loopback-only enforced per connection) because the OS
 restricts low-port binds on specific addresses. Needs `python3` (stdlib
 only); the rest of margay does not.
@@ -99,10 +102,13 @@ only); the rest of margay does not.
 
 By default everything is loopback-locked. `--domain devel.local` (or
 `MARGAY_DOMAIN=devel.local` in the environment) switches the hostname scheme
-to `http://<service>.<worktree>.<project>.devel.local/` **and exposes both
+to `http://<service>.<worktree>.<project>.devel.local/` for sandboxes and
+`http://margay.devel.local/` for the control panel, **and exposes both
 the proxy and the control panel to the network** — any device that can reach
 the VM can browse sandboxes and press up/down. Your VPN/firewall is the
-perimeter; margay adds no auth in this mode.
+perimeter; margay adds no auth in this mode. Note: `margay.<domain>` is
+reserved for the control panel; a project literally named `margay` loses the
+proxy hostname to it and falls back to port-based URLs instead.
 
 Checklist for a homelab VM:
 

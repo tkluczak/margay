@@ -72,6 +72,7 @@ def worktrees(primary):
 
 
 PROXY = {"port": None}   # set by main() once the proxy listener binds
+UI = {"port": None}      # set by main() once the control-panel listener binds
 
 
 def slugify(name):
@@ -103,6 +104,14 @@ def host_url(host):
     return "http://%s:%d/" % (host, PROXY["port"])
 
 
+RESERVED_LABEL = "margay"   # the control panel's own hostname label
+
+
+def reserved_host():
+    """The host the control panel reserves for itself: margay.<domain>."""
+    return "%s.%s" % (RESERVED_LABEL, DOMAIN["name"])
+
+
 def leaf_services(rows):
     """Rows of one worktree -> services no sibling row's `uses` points at."""
     used = {r.get("uses") for r in rows if r.get("uses")}
@@ -129,6 +138,15 @@ def build_routes():
         by_wt.setdefault((r.get("project"), r.get("worktreePath")), []).append(r)
     routes, info = {}, {}
     claimed = set()
+    # The control panel reserves margay.<domain>. Seeded BEFORE the project
+    # loop so a project slugged "margay" hits the existing `base in claimed`
+    # branch and degrades to port links like any other slug collision — no
+    # separate code path, and state()/ui.html need no changes. Gated on the
+    # proxy too: with no proxy there is no margay.<domain> route at all.
+    if UI["port"] is not None and PROXY["port"] is not None:
+        reserved = reserved_host()
+        routes[reserved] = UI["port"]
+        claimed.add(reserved)
     ordered = sorted(by_wt.items(),
                      key=lambda kv: min(r.get("startedAt") or "" for r in kv[1]))
     for (project, wt_path), rows in ordered:
@@ -280,6 +298,18 @@ class Handler(BaseHTTPRequestHandler):
         hosts = {"127.0.0.1:%d" % port, "localhost:%d" % port}
         if exposed():
             hosts.add("%s:%d" % (DOMAIN["name"], port))
+        # Requests arriving through the proxy carry the reserved host verbatim
+        # (Host is not a hop header — see _proxy, lib/ui.py:443), so it must
+        # be accepted or every control action via margay.<domain> 403s. Safe:
+        # reaching this handler with that Host means the browser navigated to
+        # it, which .localhost pins to loopback (RFC 6761) — a cross-origin
+        # page cannot forge it. A browser omits the port from Host only when
+        # it matches the scheme default (80 for http); on any other port it
+        # includes it, so mirror exactly what the proxy's actual port implies.
+        if PROXY["port"] is not None:
+            reserved = reserved_host()
+            hosts.add(reserved if PROXY["port"] == 80
+                      else "%s:%d" % (reserved, PROXY["port"]))
         if self.headers.get("Host", "") not in hosts:
             return False
         origin = self.headers.get("Origin")
@@ -556,6 +586,7 @@ def main():
     except OSError as e:
         print("margay ui: cannot bind port %d (%s) — is another margay ui running? Try --port N" % (args.port, e))
         return 1
+    UI["port"] = args.port
     proxy_srv, wildcard, bind_err = None, False, None
     attempts = ([("", args.proxy_port)] if exposed() or os.environ.get("MARGAY_UI_WILDCARD")
                 else [("127.0.0.1", args.proxy_port), ("", args.proxy_port)])
@@ -583,9 +614,22 @@ def main():
     else:
         print("margay ui: warning: cannot bind proxy port %d (%s) — "
               "subdomain URLs disabled, falling back to port links" % (args.proxy_port, bind_err))
-    sys.stdout.flush()
-    url = "http://127.0.0.1:%d" % args.port
+    # Prefer the pretty URL, but only when the proxy actually bound — with no
+    # proxy there is no margay.<domain> route and the port is the only way in.
+    if PROXY["port"] is not None:
+        reserved = reserved_host()
+        url = host_url(reserved)
+        # Warn once if a KNOWN project would want this host. Keyed off
+        # projects.json, not live registry rows, so it still fires when
+        # nothing is running yet — the shadowing is a property of the name.
+        if any(isinstance(p, dict) and slugify(p.get("project")) == RESERVED_LABEL
+               for p in read_json(PROJECTS)):
+            print("margay ui: warning: project 'margay' wants %s — reserved for "
+                  "the control panel; that project falls back to port links" % reserved)
+    else:
+        url = "http://127.0.0.1:%d" % args.port
     print("margay ui → %s   (Ctrl-C to stop)" % url)
+    sys.stdout.flush()
     if not args.no_browser:
         webbrowser.open(url)
     try:

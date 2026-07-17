@@ -13,6 +13,7 @@ BUSY_PID=""
 FB_PID=""
 WILD_PID=""
 V6_PID=""
+PANELPID=""
 assert_eq()       { if [[ "$1" == "$2" ]]; then echo "ok: $3"; else echo "FAIL: $3 — expected [$1] got [$2]"; FAILS=$((FAILS+1)); fi; }
 assert_contains() { if [[ "$1" == *"$2"* ]]; then echo "ok: $3"; else echo "FAIL: $3 — [$1] lacks [$2]"; FAILS=$((FAILS+1)); fi; }
 
@@ -293,7 +294,7 @@ kill $WS_UP_PID 2>/dev/null
 # give the worktree a second leaf (killing later unique-root assertions)
 jq '[.[] | select(.service != "ws")]' "$MARGAY_HOME/registry.json" > "$MARGAY_HOME/registry.json.tmp" \
   && mv "$MARGAY_HOME/registry.json.tmp" "$MARGAY_HOME/registry.json"
-trap 'kill ${UI_PID:-} ${UPSTREAM_PID:-} ${UPSTREAM2_PID:-} ${WS_UP_PID:-} ${BUSY_PID:-} ${FB_PID:-} ${WILD_PID:-} ${V6_PID:-} ${DOM_PID:-} 2>/dev/null' EXIT
+trap 'kill ${UI_PID:-} ${UPSTREAM_PID:-} ${UPSTREAM2_PID:-} ${WS_UP_PID:-} ${BUSY_PID:-} ${FB_PID:-} ${WILD_PID:-} ${V6_PID:-} ${DOM_PID:-} ${PANELPID:-} 2>/dev/null' EXIT
 
 # --- proxy: bind fallback ---
 BUSY=$(( (RANDOM % 2000) + 27000 ))
@@ -352,6 +353,10 @@ assert_eq "200" "$code" "domain: control api accepts the declared domain host"
 code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.example:$((PORT+3))" "http://127.0.0.1:$((PORT+3))/api/state")"
 assert_eq "403" "$code" "domain: control api still rejects unknown hosts"
 assert_contains "$(cat "$DOM_LOG")" "devel.test" "domain: startup line names the domain"
+# Host carries the port because DOMPORT is not the http default (80) — a
+# real browser hitting http://margay.devel.test:$DOMPORT/ sends it that way.
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: margay.devel.test:$DOMPORT" "http://127.0.0.1:$DOMPORT/")"
+assert_eq "200" "$code" "v6: margay.<domain> follows --domain"
 kill $DOM_PID 2>/dev/null
 
 # also: default mode must still reject the same foreign Host header
@@ -475,10 +480,114 @@ for ip in ("127.0.0.1", "127.9.9.9", "::1", "::ffff:127.0.0.1"):
 for ip in ("192.168.1.10", "10.0.0.1", "2001:db8::1", "8.8.8.8"):
     assert not ui.loopback_peer(ip), ip
 
+# regression: the reserved margay.<domain> route is gated on BOTH the panel's
+# own listener AND the proxy — with no proxy there is no margay.* route at all
+# (registry/projects fixture here is whatever the block above last wrote; the
+# reserved-host assertion doesn't depend on project rows).
+ui.UI["port"] = 9999
+ui.PROXY["port"] = None
+routes5, info5 = ui.build_routes()
+assert ui.reserved_host() not in routes5, routes5
+ui.PROXY["port"] = 8080
+routes6, info6 = ui.build_routes()
+assert routes6.get(ui.reserved_host()) == 9999, routes6
+ui.UI["port"] = None
+ui.PROXY["port"] = None
+
+# regression: origin_ok's bare-host branch (proxy bound to :80 omits the port
+# in Host, matching real browser behavior) — the port-qualified branch is
+# already covered end-to-end by the v6 curl assertions below; this covers the
+# bare form, which the suite otherwise can't reach without a root-owned :80.
+import types
+
+
+class _Stub:
+    def __init__(self, host, origin=None, port=9000):
+        self.headers = {"Host": host}
+        if origin is not None:
+            self.headers["Origin"] = origin
+        self.server = types.SimpleNamespace(server_address=("0.0.0.0", port))
+
+
+ui.PROXY["port"] = 80
+assert ui.Handler.origin_ok(_Stub("margay.localhost")), "bare reserved host accepted when proxy is on :80"
+assert not ui.Handler.origin_ok(_Stub("margay.localhost:80")), "port-qualified form rejected when proxy is on :80"
+ui.PROXY["port"] = 8080
+assert ui.Handler.origin_ok(_Stub("margay.localhost:8080")), "port-qualified reserved host accepted off :80"
+assert not ui.Handler.origin_ok(_Stub("margay.localhost")), "bare form rejected when proxy is not on :80"
+ui.PROXY["port"] = None
+
 print("PYHELP_OK")
 PYEOF
 }
 out="$(pyhelp 2>&1)"; assert_contains "$out" "PYHELP_OK" "routing helpers pass python assertions"
+
+# --- v6: control panel at margay.localhost ---
+# PROXYPORT is a random non-80 port, so a real browser navigating to
+# http://margay.localhost:$PROXYPORT/ sends the port in Host (HTTP only
+# omits it when it equals the scheme default). Note: _proxy routes on
+# Host.split(":")[0] (lib/ui.py:424), so adding the port here only changes
+# what origin_ok sees — not how the proxy routes — which is the point.
+# NOTE: the bare-host branch of origin_ok's ternary (proxy bound to :80) can't
+# be driven end-to-end here — binding :80 requires root/privileged ports,
+# which is not available to an unprivileged test run. It IS covered at the
+# unit level in the pyhelp block above (stubbed Handler, PROXY["port"] = 80).
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: margay.localhost:$PROXYPORT" "http://127.0.0.1:$PROXYPORT/")"
+assert_eq "200" "$code" "v6: margay.localhost serves the panel through the proxy"
+body="$(curl -s -H "Host: margay.localhost:$PROXYPORT" "http://127.0.0.1:$PROXYPORT/")"
+case "$body" in
+  *"<html"*|*"<!doctype"*|*"<!DOCTYPE"*) echo "ok: v6: margay.localhost returns the panel HTML" ;;
+  *) echo "FAIL: v6: margay.localhost returned no HTML — [${body:0:80}]"; FAILS=$((FAILS+1)) ;;
+esac
+
+# v6: the control API works through the proxy (this is what pins origin_ok)
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: margay.localhost:$PROXYPORT" \
+     "http://127.0.0.1:$PROXYPORT/api/state")"
+assert_eq "200" "$code" "v6: control API reachable via margay.localhost"
+code="$(curl -s -o /dev/null -w '%{http_code}' \
+     -H "Host: margay.localhost:$PROXYPORT" -H "Origin: http://margay.localhost:$PROXYPORT" \
+     -X POST -d '{"worktreePath":"/nonexistent-v6"}' "http://127.0.0.1:$PROXYPORT/api/up")"
+if [[ "$code" == "403" ]]; then
+  echo "FAIL: v6: POST via margay.localhost rejected by origin_ok (403)"; FAILS=$((FAILS+1))
+else
+  echo "ok: v6: POST via margay.localhost passes the origin guard (got $code)"
+fi
+
+# v6: collision — a project named "margay" is shadowed by the panel
+PANELHOME="$(mktemp -d)"
+PANELPORT=$(( PORT + 5 )); PANELPROXY=$(( PROXYPORT + 5 ))
+PANELUP=$(( UPSTREAM_PORT + 5 ))
+cat > "$PANELHOME/projects.json" <<EOF
+[{"project":"margay","primaryPath":"$REPO","lastUp":"2026-07-15T00:00:00Z"}]
+EOF
+cat > "$PANELHOME/registry.json" <<EOF
+[{"project":"margay","service":"api","branch":"main","worktreePath":"$REPO","port":$PANELUP,
+  "dbName":null,"uses":null,"log":null,"pid":$$,"startedAt":"2026-07-15T00:00:00Z"}]
+EOF
+MARGAY_HOME="$PANELHOME" python3 "$HERE/../lib/ui.py" --port "$PANELPORT" \
+  --proxy-port "$PANELPROXY" --no-browser > "$PANELHOME/out.log" 2>&1 &
+PANELPID=$!
+for _ in $(seq 1 40); do
+  curl -sf "http://127.0.0.1:$PANELPORT/api/state" >/dev/null 2>&1 && break
+  sleep 0.25
+done
+panelout="$(cat "$PANELHOME/out.log")"
+assert_contains "$panelout" "reserved" "v6: warns that project 'margay' is shadowed by the panel"
+assert_contains "$panelout" "http://margay.localhost:$PANELPROXY/" \
+  "v6: startup advertises the pretty panel URL"
+# the panel wins the host … (Host carries the port: PANELPROXY isn't 80 — see
+# the "v6: margay.<domain> follows --domain" fixture above for why)
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: margay.localhost:$PANELPROXY" "http://127.0.0.1:$PANELPROXY/")"
+assert_eq "200" "$code" "v6: panel wins margay.localhost over the same-named project"
+# … and that project degrades exactly like any other slug collision
+pst="$(curl -s "http://127.0.0.1:$PANELPORT/api/state")"
+PANELWT="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$pst")"
+assert_eq "true" "$(jq -r '.collision' <<<"$PANELWT")" \
+  "v6: shadowed project is marked collision"
+assert_eq "http://localhost:$PANELUP" \
+  "$(jq -r '.services[] | select(.service=="api") | .url' <<<"$PANELWT")" \
+  "v6: shadowed project falls back to port links"
+kill "$PANELPID" 2>/dev/null
 
 echo "----"
 if (( FAILS )); then echo "$FAILS failure(s)"; exit 1; else echo "all passed"; exit 0; fi

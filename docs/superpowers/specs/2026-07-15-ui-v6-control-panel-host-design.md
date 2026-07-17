@@ -84,7 +84,8 @@ browser → http://margay.localhost/
   - `main()`: after the proxy binds, print the pretty URL as the primary line;
     keep the port URL as the fallback line when it didn't. Browser auto-open
     (unless `--no-browser`) targets whichever was chosen. Emit the collision
-    warning if `build_routes()` reports a shadowed project.
+    warning computed as described above (read directly from `projects.json`,
+    independently of `build_routes()`).
 - No change to `ProxyHandler`, `_tunnel` (websockets ride the same route),
   `peer_ok`, or the `margay` CLI.
 

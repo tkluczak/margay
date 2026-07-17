@@ -38,21 +38,33 @@
 
 Append to `test/ui_test.sh`, immediately before its final summary block (the `echo "----"` / FAILS report — read the end of the file and place this above it):
 
+**Why this asserts 403 and not 200.** `do_GET` calls `origin_ok()` before
+anything else (`lib/ui.py:290-292`), and widening that guard is Task 2's job —
+so the panel cannot return 200 yet. But the three states are distinguishable,
+which is what makes this a real test:
+
+| state | response |
+|---|---|
+| no route (now) | **502** — the proxy's `_gateway_page`, via `_send_html(status=502)` (`lib/ui.py:518`) |
+| route exists, guard not yet widened (after this task) | **403** — the request reached the *panel* and its guard rejected it |
+| route + widened guard (after Task 2) | **200** |
+
+A 403 therefore proves the route works: the proxy handed the request to the
+UI instead of answering 502 itself. Task 2 flips this same assertion to 200.
+
 ```bash
 # --- v6: control panel at margay.localhost ---
+# 403 (not 200) is correct here: the route exists so the proxy forwards to the
+# panel, whose origin_ok still rejects the proxied Host until Task 2 widens it.
+# 502 would mean the route is missing entirely (proxy gateway page).
 code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: margay.localhost" "http://127.0.0.1:$PROXYPORT/")"
-assert_eq "200" "$code" "v6: margay.localhost serves the panel through the proxy"
-body="$(curl -s -H "Host: margay.localhost" "http://127.0.0.1:$PROXYPORT/")"
-case "$body" in
-  *"<html"*|*"<!doctype"*|*"<!DOCTYPE"*) echo "ok: v6: margay.localhost returns the panel HTML" ;;
-  *) echo "FAIL: v6: margay.localhost returned no HTML — [${body:0:80}]"; FAILS=$((FAILS+1)) ;;
-esac
+assert_eq "403" "$code" "v6: margay.localhost reaches the panel through the proxy (guard widens in the next commit)"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash test/ui_test.sh 2>&1 | tail -8`
-Expected: FAIL on "margay.localhost serves the panel" — there is no such route, so `_proxy` falls through to `_gateway_page(routes)`, which answers 404 (not 200) and returns the gateway HTML rather than the panel.
+Expected: FAIL with **got [502]** — there is no such route, so `_proxy` falls through to `_gateway_page(routes)`, which answers 502. Seeing 502 here (rather than 403) is what proves the assertion is measuring the route's existence.
 
 - [ ] **Step 3: Add the `UI` module state**
 
@@ -98,9 +110,7 @@ In `main()`, directly after the UI server binds successfully — i.e. after the 
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `bash test/ui_test.sh 2>&1 | tail -8`
-Expected: `ok: v6: margay.localhost serves the panel through the proxy` and `ok: v6: margay.localhost returns the panel HTML`, then the suite's normal `all passed`.
-
-**If instead you get 403** — that is the `origin_ok` rejection Task 2 fixes. The GET path may or may not hit it depending on the handler; if these two assertions pass, proceed. If they 403, note it in your report and continue to Step 7 anyway; Task 2 addresses it.
+Expected: `ok: v6: margay.localhost reaches the panel through the proxy` — the code moved 502 → 403 — and the suite's normal `all passed`. **The suite must be fully green before you commit.** If you still see 502, the seeding isn't taking effect; if you see 200, `origin_ok` already accepts the host and the plan's model of the code is wrong — report that rather than adjusting the assertion to match.
 
 - [ ] **Step 7: Add the `--domain` route assertion**
 
@@ -110,9 +120,13 @@ The reserved host is derived from `DOMAIN["name"]`, so it must follow
 immediately **before** its `kill $DOM_PID` line — it must run while that
 instance is alive, and it reuses that instance rather than starting another:
 
+Same 403-not-200 reasoning as Step 1: this proves the reserved host follows
+`--domain` (the request reached the panel rather than the proxy's 502 gateway).
+Task 2 flips it to 200.
+
 ```bash
 code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: margay.devel.test" "http://127.0.0.1:$DOMPORT/")"
-assert_eq "200" "$code" "v6: margay.<domain> follows --domain"
+assert_eq "403" "$code" "v6: margay.<domain> follows --domain (guard widens in the next commit)"
 ```
 
 - [ ] **Step 8: Run the domain assertion**
@@ -143,7 +157,33 @@ git commit -m "feat(ui): reserve margay.<domain> as a proxy route to the control
 
 **Why it stays safe:** the guard exists so a page on `evil.com` cannot drive a panel that starts services and runs hooks — the browser stamps `Host: evil.com`, which is not in the set. Adding `margay.localhost` gives an attacker nothing: to make a browser send that `Host` it must actually navigate to `margay.localhost`, which RFC 6761 pins to loopback, and the `Origin` then matches same-origin anyway.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Flip Task 1's two assertions from 403 to 200**
+
+Task 1 asserted 403 because the guard hadn't widened yet — it proved the route
+reached the panel. Widening the guard is this task, so those two assertions now
+become 200. **Edit them in place; do not add duplicates.**
+
+In `test/ui_test.sh`, in the `# --- v6: control panel at margay.localhost ---`
+block, replace the assertion and its explanatory comment with:
+
+```bash
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: margay.localhost" "http://127.0.0.1:$PROXYPORT/")"
+assert_eq "200" "$code" "v6: margay.localhost serves the panel through the proxy"
+body="$(curl -s -H "Host: margay.localhost" "http://127.0.0.1:$PROXYPORT/")"
+case "$body" in
+  *"<html"*|*"<!doctype"*|*"<!DOCTYPE"*) echo "ok: v6: margay.localhost returns the panel HTML" ;;
+  *) echo "FAIL: v6: margay.localhost returned no HTML — [${body:0:80}]"; FAILS=$((FAILS+1)) ;;
+esac
+```
+
+And in the `--domain devel.test` block, replace that assertion with:
+
+```bash
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: margay.devel.test" "http://127.0.0.1:$DOMPORT/")"
+assert_eq "200" "$code" "v6: margay.<domain> follows --domain"
+```
+
+- [ ] **Step 2: Write the new failing tests**
 
 Append to `test/ui_test.sh`, directly after the Task 1 block:
 
@@ -166,12 +206,16 @@ Note the POST asserts **not-403** rather than a specific success code: the
 target worktree doesn't exist, so `/api/up` legitimately answers 4xx/5xx. What
 matters is that it is not the *origin guard* rejecting it.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 3: Run tests to verify they fail**
 
-Run: `bash test/ui_test.sh 2>&1 | tail -8`
-Expected: FAIL on "control API reachable via margay.localhost" (403, not 200) and FAIL on "POST via margay.localhost rejected by origin_ok (403)" — both are `origin_ok` rejecting the forwarded `Host: margay.localhost:<PROXYPORT>`.
+Run: `bash test/ui_test.sh 2>&1 | grep -E 'v6:'`
+Expected: **five** failing v6 assertions, all for the same reason — `origin_ok` rejecting the forwarded `Host: margay.localhost:<PROXYPORT>`:
+- the two you flipped in Step 1 (panel via proxy → got 403 not 200; `--domain` → got 403 not 200)
+- "margay.localhost returns the panel HTML" (the body is the 403 JSON, not HTML)
+- "control API reachable via margay.localhost" (403, not 200)
+- "POST via margay.localhost rejected by origin_ok (403)"
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 4: Write the implementation**
 
 In `lib/ui.py`, replace `origin_ok()` (~278-288) with:
 
@@ -198,17 +242,17 @@ In `lib/ui.py`, replace `origin_ok()` (~278-288) with:
         return True
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 5: Run tests to verify they pass**
 
-Run: `bash test/ui_test.sh 2>&1 | tail -12`
-Expected: `ok: v6: control API reachable via margay.localhost`, `ok: v6: POST via margay.localhost passes the origin guard`, and — critically — the pre-existing `ok: POST with cross-site Origin rejected` and `ok: request with rebound Host rejected` still passing.
+Run: `bash test/ui_test.sh 2>&1 | grep -E 'v6:' && bash test/ui_test.sh 2>&1 | tail -3`
+Expected: all five v6 assertions now `ok:`, and `all passed`.
 
-- [ ] **Step 5: Verify the guard still bites**
+- [ ] **Step 6: Verify the guard still bites**
 
 Run: `bash test/ui_test.sh 2>&1 | grep -E 'rebound Host|cross-site Origin|unknown hosts|custom-domain host'`
 Expected: every line `ok:`. If any became FAIL, the widening was too broad — the reserved host must be the *only* addition.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add lib/ui.py test/ui_test.sh
