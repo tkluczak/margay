@@ -64,7 +64,7 @@ margay down feat-payments  # stop another worktree's
 margay down --all          # stop everything margay started
 ```
 
-### `margay ui [--port N] [--proxy-port N] [--domain D]` (and `--no-browser`)
+### `margay ui [--port N] [--proxy-port N] [--domain D] [--trusted-proxy]` (and `--no-browser`)
 
 Local web control panel at `http://127.0.0.1:7997` (foreground; Ctrl-C stops).
 Shows every project you have ever run `margay up` in (auto-learned into
@@ -115,9 +115,21 @@ Checklist for a homelab VM:
 - **DNS:** wildcard the domain at your resolver, e.g. dnsmasq/Pi-hole
   `address=/devel.local/<VM-IP>`. (mDNS alone cannot resolve wildcard
   subdomains — you need a real DNS server for `*.devel.local`.)
-- **Port 80 on Linux:** either run the UI with
-  `AmbientCapabilities=CAP_NET_BIND_SERVICE` under systemd, or use
-  `--proxy-port 8080` (URLs then carry `:8080`).
+- **Port 80 on Linux:** binding ports below 1024 needs privilege. Either run
+  the UI with `AmbientCapabilities=CAP_NET_BIND_SERVICE` under a *system*
+  systemd unit, use `--proxy-port 8080` (URLs then carry `:8080`), or front it
+  with a reverse proxy that owns 80/443 (next bullet).
+- **Behind a reverse proxy (Nginx Proxy Manager etc.):** run margay's proxy on
+  an unprivileged port and let NPM terminate TLS on `<domain>`. Point one NPM
+  proxy host at `*.<domain> → http://<vm>:8080` with **Websockets Support on**
+  and the **Host header preserved** (NPM's default — margay routes entirely on
+  `Host`). Then add `--trusted-proxy` so the control panel
+  (`margay.<domain>`) accepts requests behind TLS termination: it honours
+  `X-Forwarded-Proto/Host` **only** when forwarded over loopback, so the panel's
+  own CSRF/origin guard keeps working while a cross-origin `Origin` is still
+  rejected. See `examples/margay-ui.service` for a ready systemd user unit.
+  (If NPM runs in Docker, `<vm>` is the host gateway — `host.docker.internal`
+  or the bridge IP — not `127.0.0.1`, which is the container itself.)
 - **Hooks:** `service_<name>_on_up()` sees the real hostnames
   (`MARGAY_ROOT_HOST=<wt>.<proj>.devel.local`), so e.g. Keycloak
   redirect-URI registration follows the domain automatically. Set

@@ -502,11 +502,14 @@ import types
 
 
 class _Stub:
-    def __init__(self, host, origin=None, port=9000):
+    def __init__(self, host, origin=None, port=9000, client="0.0.0.0", fwd_host=None):
         self.headers = {"Host": host}
         if origin is not None:
             self.headers["Origin"] = origin
+        if fwd_host is not None:
+            self.headers["X-Forwarded-Host"] = fwd_host
         self.server = types.SimpleNamespace(server_address=("0.0.0.0", port))
+        self.client_address = (client, 0)
 
 
 ui.PROXY["port"] = 80
@@ -515,6 +518,34 @@ assert not ui.Handler.origin_ok(_Stub("margay.localhost:80")), "port-qualified f
 ui.PROXY["port"] = 8080
 assert ui.Handler.origin_ok(_Stub("margay.localhost:8080")), "port-qualified reserved host accepted off :80"
 assert not ui.Handler.origin_ok(_Stub("margay.localhost")), "bare form rejected when proxy is not on :80"
+ui.PROXY["port"] = None
+
+# --trusted-proxy: behind a TLS-terminating reverse proxy (NPM) the browser hits
+# the public origin — Host loses margay's proxy port (443 default) and Origin is
+# https. Both must pass when forwarded over loopback by the local proxy, and be
+# rejected from a direct remote peer that could forge X-Forwarded-*.
+ui.DOMAIN["name"] = "devel.tkluczak.com"
+ui.PROXY["port"] = 8080
+ui.TRUSTED_PROXY["on"] = True
+RES = "margay.devel.tkluczak.com"
+assert ui.Handler.origin_ok(_Stub(RES, origin="https://" + RES, client="127.0.0.1")), \
+    "trusted-proxy: https panel origin accepted over loopback"
+assert ui.Handler.origin_ok(_Stub(RES, origin="http://" + RES, client="::1")), \
+    "trusted-proxy: http panel origin accepted over loopback"
+assert ui.Handler.origin_ok(_Stub(RES + ":8443", origin="https://" + RES + ":8443",
+    client="127.0.0.1", fwd_host=RES + ":8443")), \
+    "trusted-proxy: non-standard external port accepted via X-Forwarded-Host"
+assert not ui.Handler.origin_ok(_Stub(RES, origin="https://evil.example", client="127.0.0.1")), \
+    "trusted-proxy: cross-origin Origin still rejected (host pinned)"
+assert not ui.Handler.origin_ok(_Stub(RES, origin="https://" + RES, client="10.0.0.9")), \
+    "trusted-proxy: forwarded origin NOT trusted from a remote peer"
+assert not ui.Handler.origin_ok(_Stub("evil.example", origin="https://evil.example",
+    client="127.0.0.1", fwd_host="evil.example")), \
+    "trusted-proxy: X-Forwarded-Host is scoped to the reserved host only"
+ui.TRUSTED_PROXY["on"] = False   # off by default: the same TLS request 403s
+assert not ui.Handler.origin_ok(_Stub(RES, origin="https://" + RES, client="127.0.0.1")), \
+    "trusted-proxy off: TLS panel origin rejected"
+ui.DOMAIN["name"] = "localhost"
 ui.PROXY["port"] = None
 
 print("PYHELP_OK")

@@ -1,0 +1,43 @@
+# margay control panel + reverse proxy as a user service.
+#
+# Install (per-user, no root — recommended):
+#   mkdir -p ~/.config/systemd/user
+#   cp examples/margay-ui.service ~/.config/systemd/user/margay-ui.service
+#   # edit the ExecStart line below (domain + margay path), then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now margay-ui
+#   loginctl enable-linger "$USER"      # keep it running after you log out
+#   journalctl --user -u margay-ui -f   # watch the log
+#
+# This template fronts margay with Nginx Proxy Manager (NPM): margay's proxy
+# listens on an UNPRIVILEGED port (8080) and NPM owns 80/443 + TLS. That
+# sidesteps the port-80 privileged-bind problem entirely — no CAP_NET_BIND_SERVICE
+# needed. --trusted-proxy lets the control panel work behind NPM's TLS
+# termination (see README "Behind a reverse proxy"). Point NPM at a single
+# proxy host:  *.<domain>  ->  http://<this-host>:8080  (Websockets: ON).
+#
+# Prefer margay to bind :80 itself (no NPM)? Drop --proxy-port/--trusted-proxy,
+# run as a SYSTEM unit (/etc/systemd/system/), and add under [Service]:
+#   AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Unit]
+Description=margay control panel + sandbox reverse proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust the domain and the path to your margay checkout.
+ExecStart=%h/Projects/tools/margay/margay ui \
+    --domain devel.tkluczak.com \
+    --proxy-port 8080 \
+    --trusted-proxy \
+    --no-browser
+Restart=on-failure
+RestartSec=2
+# --domain/--trusted-proxy can also come from the environment instead of flags:
+#   Environment=MARGAY_DOMAIN=devel.tkluczak.com
+#   Environment=MARGAY_TRUSTED_PROXY=1
+
+[Install]
+WantedBy=default.target
