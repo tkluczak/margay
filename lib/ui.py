@@ -73,6 +73,7 @@ def worktrees(primary):
 
 PROXY = {"port": None}   # set by main() once the proxy listener binds
 UI = {"port": None}      # set by main() once the control-panel listener binds
+TRUSTED_PROXY = {"on": False}   # --trusted-proxy: honour X-Forwarded-* from a local reverse proxy
 
 
 def slugify(name):
@@ -296,6 +297,7 @@ class Handler(BaseHTTPRequestHandler):
     def origin_ok(self):
         port = self.server.server_address[1]
         hosts = {"127.0.0.1:%d" % port, "localhost:%d" % port}
+        schemes = {"http"}
         if exposed():
             hosts.add("%s:%d" % (DOMAIN["name"], port))
         # Requests arriving through the proxy carry the reserved host verbatim
@@ -310,10 +312,27 @@ class Handler(BaseHTTPRequestHandler):
             reserved = reserved_host()
             hosts.add(reserved if PROXY["port"] == 80
                       else "%s:%d" % (reserved, PROXY["port"]))
+        # Behind a trusted TLS-terminating reverse proxy (e.g. Nginx Proxy
+        # Manager) the browser talks to the proxy's public origin, not ours:
+        # Host loses margay's proxy port (443/80 is the scheme default) and
+        # Origin carries https. Widen the allow-list to the panel's public
+        # host + https — but ONLY the reserved host, and only when the request
+        # reached us over loopback (i.e. forwarded by a local proxy). A
+        # cross-origin attacker's Origin still fails the check (the host is
+        # pinned to margay.<domain>), and X-Forwarded-* are never honoured from
+        # a direct remote peer that could forge them.
+        if (TRUSTED_PROXY["on"] and PROXY["port"] is not None
+                and loopback_peer(self.client_address[0])):
+            reserved = reserved_host()
+            hosts.add(reserved)   # standard-port front (browser omits 80/443)
+            fwd_host = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip().lower()
+            if fwd_host and fwd_host.split(":")[0] == reserved:
+                hosts.add(fwd_host)   # non-standard external port, e.g. :8443
+            schemes.add("https")
         if self.headers.get("Host", "") not in hosts:
             return False
         origin = self.headers.get("Origin")
-        if origin and origin not in {"http://%s" % h for h in hosts}:
+        if origin and origin not in {"%s://%s" % (s, h) for s in schemes for h in hosts}:
             return False
         return True
 
@@ -578,8 +597,14 @@ def main():
     ap.add_argument("--domain", default=DOMAIN["name"],
                     help="base domain for sandbox hostnames (default: localhost, "
                          "loopback-only; anything else serves remote peers too)")
+    ap.add_argument("--trusted-proxy", action="store_true",
+                    default=bool(os.environ.get("MARGAY_TRUSTED_PROXY")),
+                    help="trust X-Forwarded-Proto/Host forwarded by a local reverse "
+                         "proxy (e.g. Nginx Proxy Manager) so the control panel works "
+                         "behind TLS termination on margay.<domain>")
     args = ap.parse_args()
     DOMAIN["name"] = args.domain
+    TRUSTED_PROXY["on"] = args.trusted_proxy
     ui_addr = ("", args.port) if exposed() else ("127.0.0.1", args.port)
     try:
         srv = ThreadingHTTPServer(ui_addr, Handler)
@@ -611,6 +636,9 @@ def main():
                 else "   (wildcard bind, loopback-only)" if wildcard else "")
         print("margay proxy → http://<worktree>.<project>.%s%s/%s"
               % (DOMAIN["name"], suffix, note))
+        if TRUSTED_PROXY["on"]:
+            print("margay ui: trusting X-Forwarded-* from a local reverse proxy "
+                  "— control panel served under https://%s" % reserved_host())
     else:
         print("margay ui: warning: cannot bind proxy port %d (%s) — "
               "subdomain URLs disabled, falling back to port links" % (args.proxy_port, bind_err))
