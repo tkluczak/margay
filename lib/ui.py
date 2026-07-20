@@ -22,6 +22,7 @@ from urllib.parse import urlparse, parse_qs
 MARGAY_HOME = Path(os.environ.get("MARGAY_HOME", str(Path.home() / ".margay")))
 PROJECTS = MARGAY_HOME / "projects.json"
 REGISTRY = MARGAY_HOME / "registry.json"
+STATIC_ROUTES = MARGAY_HOME / "static-routes.json"
 LOG_DIR = MARGAY_HOME / "logs"
 MARGAY_BIN = os.environ.get("MARGAY_BIN", str(Path(__file__).resolve().parent.parent / "margay"))
 PAGE = Path(__file__).resolve().parent / "ui.html"
@@ -43,6 +44,20 @@ def pid_alive(pid):
     try:
         os.kill(int(pid), 0)
         return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def port_alive(port):
+    """True if something is accepting connections on localhost:<port>.
+
+    Used to show a live/down dot for static routes, whose upstream margay
+    doesn't manage (so there's no pid to check). Short timeout — this runs on
+    every /state poll.
+    """
+    try:
+        with socket.create_connection(("localhost", int(port)), timeout=0.3):
+            return True
     except (OSError, TypeError, ValueError):
         return False
 
@@ -134,13 +149,35 @@ def leaf_services(rows):
     return [r for r in rows if "http://localhost:%s" % r.get("port") not in used]
 
 
+def static_routes():
+    """User-defined host label -> localhost port, from static-routes.json.
+
+    Each entry {"label": "<subdomain-prefix>", "port": <int>} publishes
+    `<label>.<DOMAIN>` -> localhost:<port>, for upstreams margay doesn't manage
+    as services (a shared Keycloak container, a docs server, ...). Unlike a
+    service route these survive `up`/`down` churn — the host is stable. Live
+    services always win a label collision (merged via setdefault in
+    build_routes). Malformed entries are skipped, never fatal to routing.
+    """
+    out = {}
+    for e in read_json(STATIC_ROUTES):
+        if not isinstance(e, dict):
+            continue
+        label = str(e.get("label", "")).strip().lower().strip(".")
+        port = e.get("port")
+        if label and isinstance(port, int) and not isinstance(port, bool):
+            out["%s.%s" % (label, DOMAIN["name"])] = port
+    return out
+
+
 def build_routes():
     """Host label -> upstream port for every live service.
 
-    Root hosts: `<wtslug>.<pslug>.localhost` (or `<pslug>.localhost` for the
-    primary checkout) map to the worktree's unique dependency leaf; every
-    service also gets `<svcslug>.` prefixed onto the base. Slug collisions
-    resolve to the earliest startedAt; losers get no hosts at all.
+    Hosts are FLAT single labels (hyphen-joined) so one `*.<domain>` wildcard
+    cert covers them all: base `<pslug>` (primary) or `<pslug>-<wtslug>`
+    (worktree) maps to the worktree's unique dependency leaf; every service also
+    gets a `<base_label>-<svcslug>` host. Slug collisions resolve to the earliest
+    startedAt; losers get no hosts at all.
     Returns (routes, wt_info) with wt_info[worktreePath] =
     {"host": root host or None, "collision": bool}.
     """
@@ -168,8 +205,12 @@ def build_routes():
     for (project, wt_path), rows in ordered:
         pslug = slugify(project)
         is_primary = primaries.get(project) == wt_path
-        base = ("%s.%s" % (pslug, DOMAIN["name"]) if is_primary
-                else "%s.%s.%s" % (slugify(os.path.basename(wt_path or "")), pslug, DOMAIN["name"]))
+        # Flat single-label hostnames so ONE `*.<domain>` wildcard cert covers
+        # every sandbox at any depth: `<pslug>[-<wtslug>]` is the worktree base
+        # (leaf), `<base_label>-<svcslug>` per service. Nested `<svc>.<wt>.<pslug>`
+        # hosts would need a fresh wildcard per level — uncoverable per-worktree.
+        base_label = pslug if is_primary else "%s-%s" % (pslug, slugify(os.path.basename(wt_path or "")))
+        base = "%s.%s" % (base_label, DOMAIN["name"])
         if base in claimed or base in routes:
             info[wt_path] = {"host": None, "collision": True}
             continue
@@ -179,8 +220,11 @@ def build_routes():
         if root:
             routes.setdefault(base, root.get("port"))
         for r in rows:
-            routes.setdefault("%s.%s" % (slugify(r.get("service")), base), r.get("port"))
+            routes.setdefault("%s-%s.%s" % (base_label, slugify(r.get("service")), DOMAIN["name"]), r.get("port"))
         info[wt_path] = {"host": base if root else None, "collision": False}
+    # Static routes fill in last so a live service never loses its host to one.
+    for host, port in static_routes().items():
+        routes.setdefault(host, port)
     return routes, info
 
 
@@ -211,8 +255,39 @@ def conf_meta(primary):
     return data
 
 
+def stopped_services(allrows, live):
+    """Recently-stopped services: a dead PID whose log file is still on disk.
+
+    Surfaced so the webapp can show WHY a service went down or crashed —
+    precisely when you want the log (the log file outlives the process; only
+    the registry row's PID goes dead). Skips any service that has a live
+    instance in the same worktree, and keeps only the newest stopped instance
+    per (worktree, service). Returns {worktreePath: [row, ...]}.
+    """
+    live_keys = {(r.get("worktreePath"), r.get("service")) for r in live}
+    latest = {}
+    for r in allrows:
+        if pid_alive(r.get("pid")):
+            continue
+        key = (r.get("worktreePath"), r.get("service"))
+        if key in live_keys:
+            continue
+        log = r.get("log")
+        if not (isinstance(log, str) and os.path.isfile(log)):
+            continue
+        cur = latest.get(key)
+        if cur is None or (r.get("startedAt") or "") > (cur.get("startedAt") or ""):
+            latest[key] = r
+    by_wt = {}
+    for r in latest.values():
+        by_wt.setdefault(r.get("worktreePath"), []).append(r)
+    return by_wt
+
+
 def state(front=None):
-    live = [r for r in read_json(REGISTRY) if pid_alive(r.get("pid"))]
+    allrows = read_json(REGISTRY)
+    live = [r for r in allrows if pid_alive(r.get("pid"))]
+    stopped_by_wt = stopped_services(allrows, live)
     _, wt_info = build_routes()
     proxy_up = PROXY["port"] is not None
     projects = []
@@ -228,26 +303,45 @@ def state(front=None):
                 name = os.path.basename(wt["path"])
                 is_primary = wt["path"] == primary
                 slug = slugify(name)
-                base = ("%s.%s" % (pslug, DOMAIN["name"]) if is_primary
-                        else "%s.%s.%s" % (slug, pslug, DOMAIN["name"]))
+                # Flat single-label hosts — must mirror build_routes().
+                base_label = pslug if is_primary else "%s-%s" % (pslug, slug)
+                base = "%s.%s" % (base_label, DOMAIN["name"])
                 info = wt_info.get(wt["path"], {})
                 services = []
                 for r in live:
                     if r.get("worktreePath") != wt["path"]:
                         continue
                     r = dict(r)
-                    svc_host = "%s.%s" % (slugify(r.get("service")), base)
+                    svc_host = "%s-%s.%s" % (base_label, slugify(r.get("service")), DOMAIN["name"])
                     r["url"] = (host_url(svc_host, front) if proxy_up and not info.get("collision")
                                 else "http://localhost:%s" % r.get("port"))
                     services.append(r)
+                stopped = []
+                for r in stopped_by_wt.get(wt["path"], []):
+                    r = dict(r)
+                    r["stopped"] = True
+                    r["url"] = None
+                    stopped.append(r)
                 wts.append({**wt, "name": name, "isPrimary": is_primary, "slug": slug,
-                            "services": services,
+                            "services": services, "stoppedServices": stopped,
                             "url": host_url(info["host"], front) if proxy_up and info.get("host") else None,
                             "hintUrl": host_url(base, front) if proxy_up else None,
                             "collision": bool(info.get("collision"))})
         projects.append({**p, "exists": exists, "worktrees": wts,
                          "conf": conf_meta(primary) if exists else None})
-    return {"projects": projects}
+    static = []
+    for e in read_json(STATIC_ROUTES):
+        if not isinstance(e, dict):
+            continue
+        label = str(e.get("label", "")).strip().lower().strip(".")
+        port = e.get("port")
+        if not (label and isinstance(port, int) and not isinstance(port, bool)):
+            continue
+        host = "%s.%s" % (label, DOMAIN["name"])
+        static.append({"label": label, "host": host, "port": port,
+                       "note": e.get("note", ""), "live": port_alive(port),
+                       "url": host_url(host, front) if proxy_up else None})
+    return {"projects": projects, "staticRoutes": static}
 
 
 def pair_options(primary, service):
@@ -623,9 +717,31 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.close_connection = True
         self._error_page(message, status)
 
+    def _front(self):
+        """External (scheme, port) this request reached the proxy through, or
+        None. Unlike the control panel (reached THROUGH margay's proxy, so its
+        peer is loopback), the ProxyHandler's direct peer IS the fronting
+        reverse proxy — so under --trusted-proxy we honour its X-Forwarded-*
+        here without a loopback check, keeping the gateway page's links on the
+        public https origin instead of leaking margay's internal :<proxy-port>.
+        """
+        if not (TRUSTED_PROXY["on"] and PROXY["port"] is not None):
+            return None
+        if self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() != "https":
+            return None
+        fwd_host = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip().lower()
+        port = None
+        if ":" in fwd_host:
+            try:
+                port = int(fwd_host.rsplit(":", 1)[1])
+            except ValueError:
+                port = None
+        return ("https", port)
+
     def _gateway_page(self, routes):
+        front = self._front()
         items = "".join('<li><a href="%s">%s</a></li>' % (u, u)
-                        for u in sorted(host_url(h) for h in routes))
+                        for u in sorted(host_url(h, front) for h in routes))
         self._send_html(
             "<!doctype html><title>margay proxy</title>"
             "<h1>no sandbox at this address</h1><p>live right now:</p><ul>%s</ul>"
