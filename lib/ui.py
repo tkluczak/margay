@@ -99,7 +99,22 @@ def peer_ok(ip):
     return exposed() or loopback_peer(ip)
 
 
-def host_url(host):
+def host_url(host, front=None):
+    """URL a browser should use to reach `host` through the proxy.
+
+    Default (`front` None): margay's own proxy on loopback — http, and the
+    proxy port unless it's the http default (80). Behind a trusted TLS
+    reverse proxy the browser never sees margay's port; pass `front` =
+    (scheme, external_port) captured from the incoming request's
+    X-Forwarded-* so the link carries the PUBLIC origin (https, standard port
+    omitted) instead of leaking margay's internal :<proxy-port>.
+    """
+    if front is not None:
+        scheme, port = front
+        default = 443 if scheme == "https" else 80
+        if port in (None, default):
+            return "%s://%s/" % (scheme, host)
+        return "%s://%s:%d/" % (scheme, host, port)
     if PROXY["port"] in (None, 80):
         return "http://%s/" % host
     return "http://%s:%d/" % (host, PROXY["port"])
@@ -196,7 +211,7 @@ def conf_meta(primary):
     return data
 
 
-def state():
+def state(front=None):
     live = [r for r in read_json(REGISTRY) if pid_alive(r.get("pid"))]
     _, wt_info = build_routes()
     proxy_up = PROXY["port"] is not None
@@ -222,13 +237,13 @@ def state():
                         continue
                     r = dict(r)
                     svc_host = "%s.%s" % (slugify(r.get("service")), base)
-                    r["url"] = (host_url(svc_host) if proxy_up and not info.get("collision")
+                    r["url"] = (host_url(svc_host, front) if proxy_up and not info.get("collision")
                                 else "http://localhost:%s" % r.get("port"))
                     services.append(r)
                 wts.append({**wt, "name": name, "isPrimary": is_primary, "slug": slug,
                             "services": services,
-                            "url": host_url(info["host"]) if proxy_up and info.get("host") else None,
-                            "hintUrl": host_url(base) if proxy_up else None,
+                            "url": host_url(info["host"], front) if proxy_up and info.get("host") else None,
+                            "hintUrl": host_url(base, front) if proxy_up else None,
                             "collision": bool(info.get("collision"))})
         projects.append({**p, "exists": exists, "worktrees": wts,
                          "conf": conf_meta(primary) if exists else None})
@@ -336,6 +351,34 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def public_front(self):
+        """External (scheme, port) this request reached the panel through, or
+        None to fall back to margay's own proxy origin.
+
+        Only trusts X-Forwarded-* under the exact conditions --trusted-proxy
+        vouches for (see origin_ok): the flag is on, a proxy is bound, the peer
+        is loopback (a local reverse proxy — never a forgeable remote peer),
+        and the proxy declared https. The port is taken from X-Forwarded-Host
+        so a non-standard TLS front (e.g. :8443) is carried through; a standard
+        443 front has no port there and host_url omits it. This makes sandbox
+        links point at the PUBLIC https origin instead of leaking margay's
+        internal :<proxy-port>.
+        """
+        if not (TRUSTED_PROXY["on"] and PROXY["port"] is not None
+                and loopback_peer(self.client_address[0])):
+            return None
+        proto = self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower()
+        if proto != "https":
+            return None
+        fwd_host = self.headers.get("X-Forwarded-Host", "").split(",")[0].strip().lower()
+        port = None
+        if ":" in fwd_host:
+            try:
+                port = int(fwd_host.rsplit(":", 1)[1])
+            except ValueError:
+                port = None
+        return ("https", port)
+
     def do_GET(self):
         if not self.origin_ok():
             self.send_json({"error": "forbidden"}, 403)
@@ -352,7 +395,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif url.path == "/api/state":
-            self.send_json(state())
+            self.send_json(state(self.public_front()))
         elif url.path == "/api/pair-options":
             q = parse_qs(url.query)
             self.send_json(pair_options(q.get("primary", [""])[0],
