@@ -123,11 +123,14 @@ Checklist for a homelab VM:
   an unprivileged port and let NPM terminate TLS on `<domain>`. Point one NPM
   proxy host at `*.<domain> → http://<vm>:8080` with **Websockets Support on**
   and the **Host header preserved** (NPM's default — margay routes entirely on
-  `Host`). Then add `--trusted-proxy` so the control panel
-  (`margay.<domain>`) accepts requests behind TLS termination: it honours
-  `X-Forwarded-Proto/Host` **only** when forwarded over loopback, so the panel's
-  own CSRF/origin guard keeps working while a cross-origin `Origin` is still
-  rejected. See `examples/margay-ui.service` for a ready systemd user unit.
+  `Host`). Then add `--trusted-proxy`: the control panel (`margay.<domain>`)
+  accepts requests behind TLS termination, and every sandbox link it shows
+  points at the public `https://<host>/` origin instead of margay's internal
+  `:<proxy-port>`. Both honour `X-Forwarded-Proto/Host` **only** when forwarded
+  over loopback, so the panel's own CSRF/origin guard keeps working while a
+  cross-origin `Origin` is still rejected. A non-standard TLS front (e.g.
+  `:8443`) is carried through into the links via `X-Forwarded-Host`. See
+  `examples/margay-ui.service` for a ready systemd user unit.
   (If NPM runs in Docker, `<vm>` is the host gateway — `host.docker.internal`
   or the bridge IP — not `127.0.0.1`, which is the container itself.)
 - **Hooks:** `service_<name>_on_up()` sees the real hostnames

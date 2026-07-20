@@ -363,6 +363,39 @@ kill $DOM_PID 2>/dev/null
 code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: devel.test:$PORT" "$BASE/api/state")"
 assert_eq "403" "$code" "default mode: custom-domain host rejected without --domain"
 
+# --- --trusted-proxy: sandbox links must carry the PUBLIC https origin, not
+# margay's internal proxy port (the broken-links bug behind a TLS reverse
+# proxy). Same registry fixture as the --domain block above. ---
+TPPORT=$(( PORT + 6 ))
+TPPROXY=$(( (RANDOM % 2000) + 35000 ))
+TP_LOG="$MARGAY_HOME/trusted-proxy-ui.log"
+MARGAY_BIN="$MOCK" python3 "$HERE/../lib/ui.py" --port "$TPPORT" --proxy-port "$TPPROXY" \
+  --domain devel.test --trusted-proxy --no-browser > "$TP_LOG" 2>&1 &
+TP_PID=$!
+for _ in $(seq 1 25); do curl -sf "http://127.0.0.1:$TPPORT/api/state" >/dev/null 2>&1 && break; sleep 0.2; done
+# Mimic NPM: forward https + the public host over loopback (the bare Host, no
+# :443, plus X-Forwarded-* is exactly what reaches the UI handler in production).
+tps="$(curl -s -H "Host: margay.devel.test" -H "X-Forwarded-Proto: https" \
+     -H "X-Forwarded-Host: margay.devel.test" "http://127.0.0.1:$TPPORT/api/state")"
+TPWT="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$tps")"
+assert_eq "https://$SLUG.fake.devel.test/" "$(jq -r '.url' <<<"$TPWT")" \
+  "trusted-proxy: worktree root url is clean https, no internal port"
+assert_eq "https://web.$SLUG.fake.devel.test/" \
+  "$(jq -r '.services[] | select(.service=="web") | .url' <<<"$TPWT")" \
+  "trusted-proxy: service url is clean https, no internal port"
+# a non-standard external TLS front (:8443) is carried through into the links
+tps8443="$(curl -s -H "Host: margay.devel.test:8443" -H "X-Forwarded-Proto: https" \
+     -H "X-Forwarded-Host: margay.devel.test:8443" "http://127.0.0.1:$TPPORT/api/state")"
+TPWT8443="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$tps8443")"
+assert_eq "https://$SLUG.fake.devel.test:8443/" "$(jq -r '.url' <<<"$TPWT8443")" \
+  "trusted-proxy: non-standard external TLS port carried into links"
+# a direct http hit (no forwarded https) still falls back to margay's proxy port
+tphttp="$(curl -s -H "Host: devel.test:$TPPORT" "http://127.0.0.1:$TPPORT/api/state")"
+TPWTH="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$tphttp")"
+assert_eq "http://$SLUG.fake.devel.test:$TPPROXY/" "$(jq -r '.url' <<<"$TPWTH")" \
+  "trusted-proxy: direct http request still uses margay's proxy port"
+kill $TP_PID 2>/dev/null
+
 # --- proxy: upstream listening on IPv6 loopback only (vite does this) ---
 V6PORT=$(( (RANDOM % 2000) + 31000 ))
 python3 - "$V6PORT" <<'PYEOF' &
@@ -463,6 +496,14 @@ ui.PROXY["port"] = 80
 assert ui.host_url("x.vp.localhost") == "http://x.vp.localhost/", ui.host_url("x.vp.localhost")
 ui.PROXY["port"] = 8123
 assert ui.host_url("x.vp.localhost") == "http://x.vp.localhost:8123/", ui.host_url("x.vp.localhost")
+# front (behind a trusted TLS proxy): the PUBLIC origin, never margay's :8123.
+# Standard 443 is omitted; a non-standard external TLS port is carried through.
+assert ui.host_url("x.vp.localhost", ("https", None)) == "https://x.vp.localhost/", \
+    ui.host_url("x.vp.localhost", ("https", None))
+assert ui.host_url("x.vp.localhost", ("https", 443)) == "https://x.vp.localhost/", \
+    ui.host_url("x.vp.localhost", ("https", 443))
+assert ui.host_url("x.vp.localhost", ("https", 8443)) == "https://x.vp.localhost:8443/", \
+    ui.host_url("x.vp.localhost", ("https", 8443))
 
 # regression: primary must NOT collide with its own project's worktrees,
 # even when a worktree started earlier (base is a dot-suffix of their hosts)
@@ -502,12 +543,15 @@ import types
 
 
 class _Stub:
-    def __init__(self, host, origin=None, port=9000, client="0.0.0.0", fwd_host=None):
+    def __init__(self, host, origin=None, port=9000, client="0.0.0.0",
+                 fwd_host=None, fwd_proto=None):
         self.headers = {"Host": host}
         if origin is not None:
             self.headers["Origin"] = origin
         if fwd_host is not None:
             self.headers["X-Forwarded-Host"] = fwd_host
+        if fwd_proto is not None:
+            self.headers["X-Forwarded-Proto"] = fwd_proto
         self.server = types.SimpleNamespace(server_address=("0.0.0.0", port))
         self.client_address = (client, 0)
 
@@ -545,6 +589,25 @@ assert not ui.Handler.origin_ok(_Stub("evil.example", origin="https://evil.examp
 ui.TRUSTED_PROXY["on"] = False   # off by default: the same TLS request 403s
 assert not ui.Handler.origin_ok(_Stub(RES, origin="https://" + RES, client="127.0.0.1")), \
     "trusted-proxy off: TLS panel origin rejected"
+
+# public_front: sandbox links follow the request's public origin, so they carry
+# https (no internal :<proxy-port>) only when the proxy actually forwarded https
+# over loopback. Anything short of that falls back to margay's own http origin.
+ui.TRUSTED_PROXY["on"] = True
+assert ui.Handler.public_front(_Stub(RES, client="127.0.0.1", fwd_proto="https")) == ("https", None), \
+    "public_front: standard TLS front -> https, no port"
+assert ui.Handler.public_front(_Stub(RES + ":8443", client="127.0.0.1",
+    fwd_proto="https", fwd_host=RES + ":8443")) == ("https", 8443), \
+    "public_front: non-standard external TLS port carried through"
+assert ui.Handler.public_front(_Stub(RES, client="127.0.0.1", fwd_proto="http")) is None, \
+    "public_front: proxy declared http -> no override"
+assert ui.Handler.public_front(_Stub(RES, client="127.0.0.1")) is None, \
+    "public_front: no X-Forwarded-Proto -> no override (direct loopback hit)"
+assert ui.Handler.public_front(_Stub(RES, client="10.0.0.9", fwd_proto="https")) is None, \
+    "public_front: forwarded proto NOT trusted from a remote peer"
+ui.TRUSTED_PROXY["on"] = False
+assert ui.Handler.public_front(_Stub(RES, client="127.0.0.1", fwd_proto="https")) is None, \
+    "public_front: off by default even with forwarded https"
 ui.DOMAIN["name"] = "localhost"
 ui.PROXY["port"] = None
 
