@@ -106,10 +106,12 @@ margay::launch() {   # service fresh empty use-overrides
   # redirect origins. Runs foreground; failure warns but never blocks the up.
   if margay::svc_fn_exists "$svc" on_up; then
     pslug="$(margay::host_slug "$project")"
-    local dsuf="${MARGAY_DOMAIN:-localhost}"
-    if [[ "$WORKTREE" == "$PRIMARY" ]]; then root_host="$pslug.$dsuf"
-    else root_host="$(margay::host_slug "$(basename "$WORKTREE")").$pslug.$dsuf"; fi
-    svc_host="$(margay::host_slug "$svc").$root_host"
+    local dsuf="${MARGAY_DOMAIN:-localhost}" base_label
+    # Flat single-label hosts — must mirror lib/ui.py build_routes().
+    if [[ "$WORKTREE" == "$PRIMARY" ]]; then base_label="$pslug"
+    else base_label="$pslug-$(margay::host_slug "$(basename "$WORKTREE")")"; fi
+    root_host="$base_label.$dsuf"
+    svc_host="$base_label-$(margay::host_slug "$svc").$dsuf"
     ( cd "$WORKTREE"
       export PORT="$port" MARGAY_ROOT_HOST="$root_host" MARGAY_SERVICE_HOST="$svc_host"
       "service_${svc}_on_up" ) \

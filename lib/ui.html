@@ -61,6 +61,9 @@
           font-family:ui-monospace,monospace; color:var(--muted); border-right:1px solid var(--line);
           cursor:pointer; white-space:nowrap; }
   .dtab.act { color:var(--fg); background:var(--bg); }
+  .dtab .stopped { font-size:.62rem; text-transform:uppercase; letter-spacing:.03em;
+                   color:var(--danger); border:1px solid var(--danger); border-radius:3px;
+                   padding:0 .25rem; opacity:.85; }
   #logpanes { flex:1; overflow:hidden; position:relative; }
   .pane { position:absolute; inset:0; overflow:auto; margin:0; padding:.5rem .8rem;
           font:0.72rem/1.5 ui-monospace,monospace; white-space:pre-wrap; word-break:break-all;
@@ -133,21 +136,25 @@ function selectWt(path) {
 // keep the selected worktree's tabs in sync with its running services
 function syncTabs(wt) {
   const st = tabsFor(wt.path);
-  const wanted = new Set(wt.services.map(s => 'log:' + s.service));
+  // Stopped services keep a (frozen) log tab so you can read why they went
+  // down — live ones win when the same service appears in both lists.
+  const logSvcs = [...wt.services, ...(wt.stoppedServices || [])];
+  const wanted = new Set(logSvcs.map(s => 'log:' + s.service));
   for (const key of [...st.tabs.keys()])
     if (key.startsWith('log:') && !wanted.has(key)) {
       st.tabs.delete(key);
       const pre = logpanes.querySelector('pre[data-key="' + CSS.escape(wt.path + '|' + key) + '"]');
       if (pre) pre.remove();
     }
-  for (const s of wt.services) {
+  for (const s of logSvcs) {
     const key = 'log:' + s.service;
     if (!st.tabs.has(key) && s.log) {
       st.tabs.set(key, { kind:'log', title: s.service, logPath: s.log,
-                         offset:-1, buf:'', follow:true, err:false });
+                         offset:-1, buf:'', follow:true, err:false, stopped: !!s.stopped });
     } else if (st.tabs.has(key)) {
       const t = st.tabs.get(key);
       if (t.logPath !== s.log) { t.logPath = s.log; t.offset = -1; t.buf = ''; }
+      t.stopped = !!s.stopped;
     }
   }
   if (!st.active || !st.tabs.has(st.active)) st.active = st.tabs.keys().next().value || null;
@@ -176,6 +183,7 @@ function renderTabs() {
     const el = document.createElement('span');
     el.className = 'dtab' + (key === st.active ? ' act' : '');
     el.innerHTML = esc(t.title) +
+      (t.kind === 'log' && t.stopped ? ' <span class="stopped" title="process not running — last log">stopped</span>' : '') +
       (t.kind === 'cmd' ? ' <span class="close" title="close">✕</span>' : '') +
       (t.kind === 'log'
         ? ' <label style="font-size:.68rem"><input type="checkbox" ' + (t.follow ? 'checked' : '') + '> follow</label>'
@@ -357,16 +365,14 @@ const basename = p => String(p || '').replace(/\/+$/, '').split('/').pop();
 function renderSidebar() {
   const el = document.getElementById('sidebar');
   const ps = lastState.projects || [];
-  if (!ps.length) {
-    el.innerHTML = '<div class="empty">no projects yet — run <code>margay up</code> in a repo</div>';
-    return;
-  }
   const groups = new Map();
   for (const p of ps) {
     if (!groups.has(p.project)) groups.set(p.project, []);
     groups.get(p.project).push(p);
   }
-  let html = '';
+  // Empty-projects message still falls through to static routes below.
+  let html = ps.length ? ''
+    : '<div class="empty">no projects yet — run <code>margay up</code> in a repo</div>';
   for (const [name, regs] of groups) {
     html += '<div class="proj-h"><b>' + esc(name) + '</b></div>';
     for (const reg of regs) {
@@ -396,6 +402,17 @@ function renderSidebar() {
             (sv ? svcButton(wt, sv, reg) : actButton(wt, true)) + '</div>';
         }
       });
+    }
+  }
+  const sr = lastState.staticRoutes || [];
+  if (sr.length) {
+    html += '<div class="proj-h"><b>static routes</b></div>';
+    for (const r of sr) {
+      const attr = r.url ? ' onclick="window.open(\'' + jsq(r.url) + '\',\'_blank\')"' : '';
+      html += '<div class="wt-row"' + attr + ' title="' + esc(r.note || r.host) + '">' +
+        '<span class="dot' + (r.live ? ' on' : '') + '"></span>' +
+        '<b>' + esc(r.label) + '</b>' +
+        '<span class="pair">→ :' + r.port + '</span></div>';
     }
   }
   el.innerHTML = html;
