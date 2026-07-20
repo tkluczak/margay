@@ -29,6 +29,8 @@ cat > "$MARGAY_HOME/projects.json" <<EOF
 EOF
 LOG="$MARGAY_HOME/logs/fake-main-api.log"
 printf 'hello log\n' > "$LOG"
+CRASH_LOG="$MARGAY_HOME/logs/fake-main-crashed.log"
+printf 'boom: startup failed\n' > "$CRASH_LOG"
 
 # mock upstream standing in for running services (python one-liner servers)
 python3 -c '
@@ -62,7 +64,9 @@ cat > "$MARGAY_HOME/registry.json" <<EOF
  {"project":"fake","service":"web","branch":"main","worktreePath":"$REPO","port":$UPSTREAM2_PORT,
   "dbName":null,"uses":"http://localhost:$UPSTREAM_PORT","log":null,"pid":$$,"startedAt":"2026-07-13T00:00:01Z"},
  {"project":"fake","service":"dead","branch":"main","worktreePath":"$REPO","port":9999,
-  "dbName":null,"uses":null,"log":null,"pid":999999,"startedAt":"2026-07-13T00:00:02Z"}]
+  "dbName":null,"uses":null,"log":null,"pid":999999,"startedAt":"2026-07-13T00:00:02Z"},
+ {"project":"fake","service":"crashed","branch":"main","worktreePath":"$REPO","port":9998,
+  "dbName":null,"uses":null,"log":"$CRASH_LOG","pid":999998,"startedAt":"2026-07-13T00:00:03Z"}]
 EOF
 
 # mock margay for POST endpoints (up succeeds, down fails) and conf-json
@@ -102,6 +106,12 @@ assert_eq "$REPO" "$(jq -r '.path' <<<"$WT_WITH_SERVICES")" "state: worktree enu
 assert_eq "2"     "$(jq -r '.services | length' <<<"$WT_WITH_SERVICES")" "state: dead pid filtered"
 assert_eq "api"   "$(jq -r '.services[0].service' <<<"$WT_WITH_SERVICES")" "state: live service present"
 assert_eq "$LOG"  "$(jq -r '.services[0].log' <<<"$WT_WITH_SERVICES")" "state: service carries log path"
+# stopped services: dead pid + log on disk surfaces separately so its log stays
+# readable ('dead' has no log file, so it must NOT appear).
+assert_eq "1"        "$(jq -r '.stoppedServices | length' <<<"$WT_WITH_SERVICES")" "state: crashed service surfaced as stopped"
+assert_eq "crashed"  "$(jq -r '.stoppedServices[0].service' <<<"$WT_WITH_SERVICES")" "state: stopped service is the crashed one"
+assert_eq "true"     "$(jq -r '.stoppedServices[0].stopped' <<<"$WT_WITH_SERVICES")" "state: stopped flag set"
+assert_eq "$CRASH_LOG" "$(jq -r '.stoppedServices[0].log' <<<"$WT_WITH_SERVICES")" "state: stopped service carries its log path"
 assert_eq "0"     "$(grep -c _normalized_path <<<"$st" || true)" "state: no internal keys leak"
 
 # --- /api/state identity and URLs ---
@@ -118,14 +128,14 @@ assert_eq "false" "$(jq -r '.collision' <<<"$PRIMARY_WT")" "state: primary no co
 # Check REPO worktree (with services)
 REPO_WT="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$st")"
 assert_eq "false" "$(jq -r '.isPrimary' <<<"$REPO_WT")" "state: linked worktree not primary"
-assert_eq "http://$SLUG.fake.localhost:$PROXYPORT/" "$(jq -r '.url' <<<"$REPO_WT")" "state: unique leaf gives worktree its root url"
-assert_eq "http://$SLUG.fake.localhost:$PROXYPORT/" "$(jq -r '.hintUrl' <<<"$REPO_WT")" "state: linked worktree hintUrl matches base"
-assert_eq "http://api.$SLUG.fake.localhost:$PROXYPORT/" \
+assert_eq "http://fake-$SLUG.localhost:$PROXYPORT/" "$(jq -r '.url' <<<"$REPO_WT")" "state: unique leaf gives worktree its root url"
+assert_eq "http://fake-$SLUG.localhost:$PROXYPORT/" "$(jq -r '.hintUrl' <<<"$REPO_WT")" "state: linked worktree hintUrl matches base"
+assert_eq "http://fake-$SLUG-api.localhost:$PROXYPORT/" \
   "$(jq -r '.services[] | select(.service=="api") | .url' <<<"$REPO_WT")" \
-  "state: api service url is service-prefixed subdomain"
-assert_eq "http://web.$SLUG.fake.localhost:$PROXYPORT/" \
+  "state: api service url is flat <base>-<svc> host"
+assert_eq "http://fake-$SLUG-web.localhost:$PROXYPORT/" \
   "$(jq -r '.services[] | select(.service=="web") | .url' <<<"$REPO_WT")" \
-  "state: web service url is service-prefixed subdomain"
+  "state: web service url is flat <base>-<svc> host"
 assert_eq "false" "$(jq -r '.collision' <<<"$REPO_WT")" "state: no collision flag"
 
 # --- /api/state conf metadata (ui v4) ---
@@ -235,16 +245,16 @@ assert_contains "$page" 'id="logtabs"' "page has the log tab strip"
 
 # --- proxy: host routing ---
 SLUG="$(python3 -c "import sys; sys.path.insert(0, '$HERE/../lib'); import ui; print(ui.slugify('$(basename "$REPO")'))")"
-r="$(curl -s -H "Host: web.$SLUG.fake.localhost" "http://127.0.0.1:$PROXYPORT/hello")"
+r="$(curl -s -H "Host: fake-$SLUG-web.localhost" "http://127.0.0.1:$PROXYPORT/hello")"
 assert_contains "$r" "upstream says hi from /hello" "proxy: service host reaches its upstream"
-assert_eq "mock" "$(curl -s -o /dev/null -w '%{header_json}' -H "Host: web.$SLUG.fake.localhost" "http://127.0.0.1:$PROXYPORT/" | jq -r '.["x-upstream"][0]')" \
+assert_eq "mock" "$(curl -s -o /dev/null -w '%{header_json}' -H "Host: fake-$SLUG-web.localhost" "http://127.0.0.1:$PROXYPORT/" | jq -r '.["x-upstream"][0]')" \
   "proxy: upstream headers pass through"
-r="$(curl -s -H "Host: $SLUG.fake.localhost" "http://127.0.0.1:$PROXYPORT/root")"
+r="$(curl -s -H "Host: fake-$SLUG.localhost" "http://127.0.0.1:$PROXYPORT/root")"
 assert_contains "$r" "upstream says hi from /root" "proxy: worktree root routes to the leaf service"
 code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: nope.fake.localhost" "http://127.0.0.1:$PROXYPORT/")"
 assert_eq "502" "$code" "proxy: unknown host is 502"
 r="$(curl -s -H "Host: nope.fake.localhost" "http://127.0.0.1:$PROXYPORT/")"
-assert_contains "$r" "$SLUG.fake.localhost" "proxy: 502 page lists live URLs"
+assert_contains "$r" "fake-$SLUG.localhost" "proxy: 502 page lists live URLs"
 
 # --- proxy: websocket tunnel ---
 WSPORT=$(( (RANDOM % 2000) + 27000 ))
@@ -274,7 +284,7 @@ reg.append({"project":"fake","service":"ws","branch":"main","worktreePath":repo,
             "dbName":None,"uses":None,"log":None,"pid":pid,"startedAt":"2026-07-13T12:00:00Z"})
 json.dump(reg, open(home + "/registry.json", "w"))
 PYEOF
-r="$(python3 - "$PROXYPORT" "ws.$SLUG.fake.localhost" <<'PYEOF'
+r="$(python3 - "$PROXYPORT" "fake-$SLUG-ws.localhost" <<'PYEOF'
 import socket, sys
 s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
 s.sendall(("GET /realtime HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
@@ -327,7 +337,7 @@ MARGAY_UI_WILDCARD=1 MARGAY_BIN="$MOCK" python3 "$HERE/../lib/ui.py" \
   --port $((PORT+2)) --proxy-port "$WILDPORT" --no-browser > "$WILD_LOG" 2>&1 &
 WILD_PID=$!
 for _ in $(seq 1 25); do curl -sf "http://127.0.0.1:$((PORT+2))/api/state" >/dev/null 2>&1 && break; sleep 0.2; done
-r="$(curl -s -H "Host: web.$SLUG.fake.localhost" "http://127.0.0.1:$WILDPORT/wild")"
+r="$(curl -s -H "Host: fake-$SLUG-web.localhost" "http://127.0.0.1:$WILDPORT/wild")"
 assert_contains "$r" "upstream says hi from /wild" "wildcard bind: proxy routes via loopback"
 assert_contains "$(cat "$WILD_LOG")" "wildcard bind, loopback-only" "wildcard bind: startup line says so"
 kill $WILD_PID 2>/dev/null
@@ -341,12 +351,12 @@ DOM_PID=$!
 for _ in $(seq 1 25); do curl -sf "http://127.0.0.1:$((PORT+3))/api/state" >/dev/null 2>&1 && break; sleep 0.2; done
 dst="$(curl -s "http://127.0.0.1:$((PORT+3))/api/state")"
 DREPO_WT="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$dst")"
-assert_eq "http://$SLUG.fake.devel.test:$DOMPORT/" "$(jq -r '.url' <<<"$DREPO_WT")" \
+assert_eq "http://fake-$SLUG.devel.test:$DOMPORT/" "$(jq -r '.url' <<<"$DREPO_WT")" \
   "domain: worktree root url carries the custom domain"
-assert_eq "http://web.$SLUG.fake.devel.test:$DOMPORT/" \
+assert_eq "http://fake-$SLUG-web.devel.test:$DOMPORT/" \
   "$(jq -r '.services[] | select(.service=="web") | .url' <<<"$DREPO_WT")" \
   "domain: service url carries the custom domain"
-r="$(curl -s -H "Host: api.$SLUG.fake.devel.test" "http://127.0.0.1:$DOMPORT/dom")"
+r="$(curl -s -H "Host: fake-$SLUG-api.devel.test" "http://127.0.0.1:$DOMPORT/dom")"
 assert_contains "$r" "upstream says hi from /dom" "domain: proxy routes custom-domain hosts"
 code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: devel.test:$((PORT+3))" "http://127.0.0.1:$((PORT+3))/api/state")"
 assert_eq "200" "$code" "domain: control api accepts the declared domain host"
@@ -378,21 +388,21 @@ for _ in $(seq 1 25); do curl -sf "http://127.0.0.1:$TPPORT/api/state" >/dev/nul
 tps="$(curl -s -H "Host: margay.devel.test" -H "X-Forwarded-Proto: https" \
      -H "X-Forwarded-Host: margay.devel.test" "http://127.0.0.1:$TPPORT/api/state")"
 TPWT="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$tps")"
-assert_eq "https://$SLUG.fake.devel.test/" "$(jq -r '.url' <<<"$TPWT")" \
+assert_eq "https://fake-$SLUG.devel.test/" "$(jq -r '.url' <<<"$TPWT")" \
   "trusted-proxy: worktree root url is clean https, no internal port"
-assert_eq "https://web.$SLUG.fake.devel.test/" \
+assert_eq "https://fake-$SLUG-web.devel.test/" \
   "$(jq -r '.services[] | select(.service=="web") | .url' <<<"$TPWT")" \
   "trusted-proxy: service url is clean https, no internal port"
 # a non-standard external TLS front (:8443) is carried through into the links
 tps8443="$(curl -s -H "Host: margay.devel.test:8443" -H "X-Forwarded-Proto: https" \
      -H "X-Forwarded-Host: margay.devel.test:8443" "http://127.0.0.1:$TPPORT/api/state")"
 TPWT8443="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$tps8443")"
-assert_eq "https://$SLUG.fake.devel.test:8443/" "$(jq -r '.url' <<<"$TPWT8443")" \
+assert_eq "https://fake-$SLUG.devel.test:8443/" "$(jq -r '.url' <<<"$TPWT8443")" \
   "trusted-proxy: non-standard external TLS port carried into links"
 # a direct http hit (no forwarded https) still falls back to margay's proxy port
 tphttp="$(curl -s -H "Host: devel.test:$TPPORT" "http://127.0.0.1:$TPPORT/api/state")"
 TPWTH="$(jq '.projects[0].worktrees[] | select(.path=="'"$REPO"'")' <<<"$tphttp")"
-assert_eq "http://$SLUG.fake.devel.test:$TPPROXY/" "$(jq -r '.url' <<<"$TPWTH")" \
+assert_eq "http://fake-$SLUG.devel.test:$TPPROXY/" "$(jq -r '.url' <<<"$TPWTH")" \
   "trusted-proxy: direct http request still uses margay's proxy port"
 kill $TP_PID 2>/dev/null
 
@@ -420,7 +430,7 @@ reg.append({"project":"fake","service":"v6svc","branch":"test","worktreePath":re
             "dbName":None,"uses":None,"log":None,"pid":pid,"startedAt":"2026-07-13T13:00:00Z"})
 json.dump(reg, open(home + "/registry.json", "w"))
 PYEOF
-r="$(curl -s -H "Host: v6svc.$SLUG.fake.localhost" "http://127.0.0.1:$PROXYPORT/hello6")"
+r="$(curl -s -H "Host: fake-$SLUG-v6svc.localhost" "http://127.0.0.1:$PROXYPORT/hello6")"
 assert_contains "$r" "v6 upstream says hi from /hello6" "proxy: reaches an IPv6-loopback-only upstream"
 kill $V6_PID 2>/dev/null
 
@@ -468,18 +478,18 @@ prim = [{"project":"vp","service":"api","worktreePath":pr,"port":7100,"uses":Non
 json.dump(rows + prim, open(home + "/registry.json", "w"))
 
 routes, info = ui.build_routes()
-assert routes["routes-wt.vp.localhost"] == 5373, routes            # unique leaf owns the root
-assert routes["web.routes-wt.vp.localhost"] == 5373, routes
-assert routes["backend.routes-wt.vp.localhost"] == 8380, routes
+assert routes["vp-routes-wt.localhost"] == 5373, routes            # unique leaf owns the root
+assert routes["vp-routes-wt-web.localhost"] == 5373, routes
+assert routes["vp-routes-wt-backend.localhost"] == 8380, routes
 assert routes["vp.localhost"] == 7100, routes                      # primary = project root
-assert routes["api.vp.localhost"] == 7100, routes
-assert info[wt] == {"host": "routes-wt.vp.localhost", "collision": False}, info
+assert routes["vp-api.localhost"] == 7100, routes
+assert info[wt] == {"host": "vp-routes-wt.localhost", "collision": False}, info
 
 # two independent services -> no root mapping
 rows2 = [dict(rows[0], uses=None), dict(rows[1], uses=None)]
 json.dump(rows2, open(home + "/registry.json", "w"))
 routes2, info2 = ui.build_routes()
-assert "routes-wt.vp.localhost" not in routes2, routes2
+assert "vp-routes-wt.localhost" not in routes2, routes2
 assert info2[wt]["host"] is None and info2[wt]["collision"] is False, info2
 
 # slug collision: wt_a vs wt-a — earliest startedAt wins
@@ -487,8 +497,8 @@ ca = dict(rows[0], worktreePath="/tmp/col/wt_a", startedAt="2026-07-13T08:00:00Z
 cb = dict(rows[0], worktreePath="/tmp/col/wt-a", startedAt="2026-07-13T08:30:00Z", port=7202)
 json.dump([ca, cb], open(home + "/registry.json", "w"))
 routes3, info3 = ui.build_routes()
-assert routes3["wt-a.vp.localhost"] == 7201, routes3
-assert info3["/tmp/col/wt_a"]["host"] == "wt-a.vp.localhost", info3
+assert routes3["vp-wt-a.localhost"] == 7201, routes3
+assert info3["/tmp/col/wt_a"]["host"] == "vp-wt-a.localhost", info3
 assert info3["/tmp/col/wt-a"] == {"host": None, "collision": True}, info3
 
 assert ui.host_url("x.vp.localhost") == "http://x.vp.localhost/", "PROXY None -> bare host"
@@ -506,14 +516,14 @@ assert ui.host_url("x.vp.localhost", ("https", 8443)) == "https://x.vp.localhost
     ui.host_url("x.vp.localhost", ("https", 8443))
 
 # regression: primary must NOT collide with its own project's worktrees,
-# even when a worktree started earlier (base is a dot-suffix of their hosts)
+# even when a worktree started earlier (flat labels keep them distinct)
 early_wt = dict(rows[0], worktreePath="/tmp/routes-wt", startedAt="2026-07-13T07:00:00Z", port=7301)
 late_prim = dict(rows[0], worktreePath=pr, startedAt="2026-07-13T09:30:00Z", port=7302)
 json.dump([early_wt, late_prim], open(home + "/registry.json", "w"))
 routes4, info4 = ui.build_routes()
 assert routes4["vp.localhost"] == 7302, routes4
 assert info4[pr]["collision"] is False, info4
-assert routes4["routes-wt.vp.localhost"] == 7301, routes4
+assert routes4["vp-routes-wt.localhost"] == 7301, routes4
 
 # loopback_peer truth table
 for ip in ("127.0.0.1", "127.9.9.9", "::1", "::ffff:127.0.0.1"):
